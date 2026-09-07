@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24.x
+          package-manager-cache: false
+      - name: Install dependencies
+        run: npm ci
+      - name: Unit tests
+        run: npm run test:unit
+      - name: Integration tests
+        run: npm run test:integration
+      - name: Install pinned OpenCode CLI
+        run: npm install --global opencode-ai@1.18.29
+      - name: Verify OpenCode CLI
+        run: |
+          command -v opencode
+          opencode --version
+      - name: OpenCode smoke test
+        run: npm run test:opencode
+      - name: Package dry run
+        run: npm pack --dry-run

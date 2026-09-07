@@ -1,0 +1,39 @@
+{
+  "name": "opencode-codegraph-bridge",
+  "version": "0.1.0",
+  "description": "CodeGraph Bridge for OpenCode：自动注册、后台索引与动态提示插件",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jeffusion/opencode-codegraph-bridge.git"
+  },
+  "homepage": "https://github.com/jeffusion/opencode-codegraph-bridge#readme",
+  "bugs": {
+    "url": "https://github.com/jeffusion/opencode-codegraph-bridge/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
+  },
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test:unit": "node --test test/unit.test.js",
+    "test:integration": "node test/integration.test.js",
+    "test:opencode": "node test/opencode-smoke.js"
+  },
+  "dependencies": {
+    "@colbymchenry/codegraph": "^1.6.0"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "1.16.2"
+  }
+}

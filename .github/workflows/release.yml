@@ -1,0 +1,67 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+
+permissions: {}
+
+concurrency:
+  group: npm-release-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: ${{ github.event.release.prerelease == false }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout published release tag
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.release.tag_name }}
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24.x
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - name: Verify stable release and tool versions
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          node --version
+          npm --version
+          node <<'NODE'
+          const fs = require('node:fs')
+          const { execFileSync } = require('node:child_process')
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'))
+          const tag = process.env.RELEASE_TAG
+          const ge = (actual, expected) => {
+            const a = actual.split('.').map(Number)
+            const e = expected.split('.').map(Number)
+            return a[0] > e[0] || (a[0] === e[0] && (a[1] > e[1] || (a[1] === e[1] && a[2] >= e[2])))
+          }
+          const nodeVersion = process.versions.node
+          const npmVersion = execFileSync('npm', ['--version'], { encoding: 'utf8' }).trim()
+          if (!ge(nodeVersion, '22.14.0')) throw new Error(`Node ${nodeVersion} < 22.14.0`)
+          if (!ge(npmVersion, '11.5.1')) throw new Error(`npm ${npmVersion} < 11.5.1`)
+          if (!/^v\d+\.\d+\.\d+$/.test(tag)) throw new Error(`非稳定 release tag: ${tag}`)
+          if (!/^\d+\.\d+\.\d+$/.test(pkg.version)) throw new Error(`package version 不是稳定版本: ${pkg.version}`)
+          if (`v${pkg.version}` !== tag) throw new Error(`tag ${tag} 与 package.json ${pkg.version} 不一致`)
+          if (pkg.name !== 'opencode-codegraph-bridge') throw new Error(`错误 package name: ${pkg.name}`)
+          if (pkg.repository?.url !== 'git+https://github.com/jeffusion/opencode-codegraph-bridge.git') throw new Error('repository 不匹配')
+          console.log(`release ${tag}, package ${pkg.name}@${pkg.version}, Node ${nodeVersion}, npm ${npmVersion}`)
+          NODE
+      - name: Install dependencies
+        run: npm ci
+      - name: Unit tests
+        run: npm run test:unit
+      - name: Integration tests
+        run: npm run test:integration
+      - name: Package dry run
+        run: npm pack --dry-run
+      - name: Publish package
+        run: npm publish --access public
