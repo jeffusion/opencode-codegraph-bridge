@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/jeffusion/opencode-codegraph-bridge/compare/v0.1.1...v0.2.0) (2026-09-07)
+
+
+### Features
+
+* update plugin version automatically on startup ([c3293c8](https://github.com/jeffusion/opencode-codegraph-bridge/commit/c3293c834d327ba406ac4feadfbf6d896f2da556))
+
 ## [0.1.1](https://github.com/jeffusion/opencode-codegraph-bridge/compare/v0.1.0...v0.1.1) (2026-09-07)
 
 
