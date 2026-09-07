@@ -17,6 +17,9 @@
   },
   "type": "module",
   "main": "src/index.js",
+  "bin": {
+    "opencode-codegraph-bridge": "src/cli.js"
+  },
   "exports": {
     ".": "./src/index.js"
   },
@@ -27,7 +30,8 @@
     "LICENSE"
   ],
   "scripts": {
-    "test:unit": "node --test test/unit.test.js test/update.test.js",
+    "test:unit": "node --test test/unit.test.js test/update.test.js test/install.test.js",
+    "test:install": "node --test test/install.test.js",
     "test:integration": "node test/integration.test.js",
     "test:opencode": "node test/opencode-smoke.js"
   },

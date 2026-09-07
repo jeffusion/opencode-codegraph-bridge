@@ -21,7 +21,17 @@ CodeGraph 能回答纯文本搜索难以回答的代码结构问题，但需要�
 
 ## 快速开始
 
-将本包加入现有 OpenCode 配置的 `plugin` 数组，保留其他所有条目，然后重启 OpenCode：
+注册本次运行的版本，然后重启 OpenCode：
+
+```sh
+npx opencode-codegraph-bridge install
+```
+
+安装器只会把本次运行包的精确版本写入标准全局 OpenCode 配置目录（`$XDG_CONFIG_HOME/opencode`，或 `~/.config/opencode`）。必须重启 OpenCode 才会加载安装的插件；安装器不会修改 `AGENTS.md` 或 MCP 配置。
+
+为避免重复加载 bridge：配置中不存在 npm bridge 条目、但含有 `file:`、git 或 npm alias 插件时，安装器会要求你手工确认配置，不会自动追加。
+
+手工配置仍可作为替代方案：将本包加入现有配置的 `plugin` 数组，并保留其他所有条目：
 
 ```json
 {
@@ -70,7 +80,7 @@ CodeGraph 能回答纯文本搜索难以回答的代码结构问题，但需要�
 
 当前 OpenCode 会话不会热加载。更新成功后，支持原生 OpenCode notification 的客户端会收到标题为 `CodeGraph Bridge` 的 OpenCode 通知：
 
-> CodeGraph Bridge update ready. Restart OpenCode to apply.
+> Update ready. Restart OpenCode to apply.
 
 通知是否可见取决于客户端的原生 OpenCode notification 支持。更新器不会修改 CodeGraph 依赖、安装全局工具，或更改你的 npm registry 设置。
 

@@ -382,7 +382,7 @@ export function createCodeGraphPlugin(options = {}, dependencies = {}) {
         await input.client?.tui?.showToast?.({
           body: {
             title: "CodeGraph Bridge",
-            message: "CodeGraph Bridge update ready. Restart OpenCode to apply.",
+            message: "Update ready. Restart OpenCode to apply.",
             variant: "info",
             duration: 5000,
           },

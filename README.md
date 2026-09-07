@@ -21,7 +21,17 @@ CodeGraph can answer structural questions that plain text search cannot, but its
 
 ## Quick start
 
-Add the package to your existing OpenCode `plugin` array, keeping every other entry, then restart OpenCode:
+Register the version being run, then restart OpenCode:
+
+```sh
+npx opencode-codegraph-bridge install
+```
+
+The installer only writes this invocation's exact package version to the standard global OpenCode config directory (`$XDG_CONFIG_HOME/opencode`, or `~/.config/opencode`). Restart OpenCode for the installed plugin to take effect. It never changes `AGENTS.md` or MCP configuration.
+
+For safety, if no npm bridge entry exists and the config contains a `file:`, git, or npm-alias plugin, the installer asks you to confirm the configuration manually instead of risking a duplicate bridge load.
+
+Manual configuration remains an alternative; add the package to your existing `plugin` array while keeping every other entry:
 
 ```json
 {
@@ -70,7 +80,7 @@ When enabled, the plugin checks the official npm registry once at startup. If Op
 
 The current OpenCode session is not hot-reloaded. After a successful update, supported OpenCode clients receive an OpenCode notification titled `CodeGraph Bridge` with:
 
-> CodeGraph Bridge update ready. Restart OpenCode to apply.
+> Update ready. Restart OpenCode to apply.
 
 Notification availability depends on the client's native OpenCode notification support. The updater does not change CodeGraph dependencies, install global tools, or alter your npm registry setting.
 
