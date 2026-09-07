@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/jeffusion/opencode-codegraph-bridge/compare/v0.1.0...v0.1.1) (2026-09-07)
+
+
+### Bug Fixes
+
+* align injected guidance with CodeGraph exploration workflow ([03841bd](https://github.com/jeffusion/opencode-codegraph-bridge/commit/03841bd5f613dfcf7a9568e7283ab8c398d51c7b))
+
 ## 0.1.0 (2026-09-07)
 
 
