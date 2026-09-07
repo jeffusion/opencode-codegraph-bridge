@@ -4,7 +4,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "n
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { parse } from "jsonc-parser"
-import { createCodeGraphPlugin } from "../src/internal.js"
+import { backgroundTaskForRoot, createCodeGraphPlugin, mcpConfig } from "../src/internal.js"
 import { createVersionUpdater, PACKAGE_NAME, REGISTRY_URL } from "../src/update.js"
 
 // Keep updater tests independent from the repository package version.
@@ -311,4 +311,108 @@ test("config 启动 updater 不阻塞，nongit 也更新；disabled 完全跳过
     await Promise.resolve()
     assert.equal(disabledCalls, 0)
   })
+})
+
+test("更新通知使用原生英文参数，每个插件实例只通知一次", async () => {
+  await tempRoot("codegraph-bridge-toast-", async (root) => {
+    const toasts = []
+    const callbacks = []
+    const logs = []
+    const tui = { showToast(payload) { assert.equal(this, tui); toasts.push(payload) } }
+    const plugin = createCodeGraphPlugin({}, {
+      updatePluginVersion: async (_config, callback) => { callbacks.push(callback); return true },
+    })
+    const input = { directory: root, client: { tui, app: { log: async ({ body }) => logs.push(body.message) } } }
+    const hooks = await plugin(input)
+    assert.equal(hooks.config({}), undefined)
+    assert.equal(hooks.config({}), undefined)
+    await Promise.resolve()
+    assert.equal(toasts.length, 0, "updater 返回 true 也不能代替成功回调")
+    callbacks[0].onSuccess(TEST_LATEST_VERSION)
+    callbacks[0].onSuccess(TEST_LATEST_VERSION)
+    callbacks[1].onSuccess(TEST_LATEST_VERSION)
+    assert.deepEqual(toasts, [{ body: {
+      title: "CodeGraph Bridge",
+      message: "Update ready. Restart OpenCode to apply.",
+      variant: "info",
+      duration: 5000,
+    } }])
+    assert.equal(logs.filter((message) => message.includes("restart required")).length, 3)
+
+    const second = await plugin(input)
+    second.config({})
+    await Promise.resolve()
+    callbacks[2].onSuccess(TEST_LATEST_VERSION)
+    assert.equal(toasts.length, 2, "不同实例不共享通知标记")
+  })
+})
+
+test("无更新、写失败和 disabled 不通知", async () => {
+  await tempRoot("codegraph-bridge-no-toast-", async (root) => {
+    for (const outcome of ["unchanged", "write-failed", "disabled"]) {
+      let calls = 0
+      const toasts = []
+      const hooks = await createCodeGraphPlugin({ enabled: outcome !== "disabled" }, {
+        updatePluginVersion: async (_config, { onSuccess }) => {
+          calls += 1
+          if (outcome === "write-failed") throw new Error("mock write failure")
+          if (outcome === "disabled") onSuccess(TEST_LATEST_VERSION)
+          return false
+        },
+      })({ directory: root, client: {
+        app: { log: async () => {} },
+        tui: { showToast: (payload) => toasts.push(payload) },
+      } })
+      assert.equal(hooks.config({}), undefined)
+      await new Promise(setImmediate)
+      assert.equal(calls, outcome === "disabled" ? 0 : 1)
+      assert.deepEqual(toasts, [])
+    }
+  })
+})
+
+test("缺少 SDK、同步异常、异步拒绝和悬挂通知不影响更新返回或 MCP", async () => {
+  for (const mode of ["no-client", "no-tui", "no-method", "throw", "reject", "pending"]) {
+    await tempRoot("codegraph-bridge-toast-safe-", async (root) => {
+      await mkdir(join(root, ".git"))
+      const logs = []
+      let toastCalls = 0
+      let updated = false
+      const client = { app: { log: async ({ body }) => logs.push(body.message) } }
+      if (mode !== "no-tui") client.tui = {}
+      if (["throw", "reject", "pending"].includes(mode)) {
+        client.tui.showToast = () => {
+          toastCalls += 1
+          if (mode === "throw") throw new Error("mock toast failure")
+          if (mode === "reject") return Promise.reject(new Error("mock toast rejection"))
+          return new Promise(() => {})
+        }
+      }
+      const runtime = { nodePath: "/node", shimPath: "/shim", cliPath: "/cli", workerPath: "/worker" }
+      const hooks = await createCodeGraphPlugin({}, {
+        resolveRuntime: () => runtime,
+        readStatus: async () => ({ ok: true, status: {
+          initialized: true, projectPath: root, lastIndexed: "2026-01-01T00:00:00.000Z",
+          fileCount: 1, index: { state: "complete", pendingRefs: 0 },
+        } }),
+        updatePluginVersion: async (_config, { onSuccess }) => {
+          onSuccess(TEST_LATEST_VERSION)
+          onSuccess(TEST_LATEST_VERSION)
+          updated = true
+          return true
+        },
+      })({ directory: root, client: mode === "no-client" ? undefined : client })
+      const config = {}
+      assert.equal(hooks.config(config), undefined)
+      assert.deepEqual(config.mcp.codegraph, mcpConfig(runtime, root))
+      await backgroundTaskForRoot(root)
+      await new Promise(setImmediate)
+      assert.equal(updated, true, mode)
+      assert.equal(toastCalls, ["throw", "reject", "pending"].includes(mode) ? 1 : 0, mode)
+      assert.equal(logs.some((message) => message.includes("版本检查已跳过")), false, mode)
+      const output = { system: [] }
+      await hooks["experimental.chat.system.transform"]({}, output)
+      assert.equal(output.system.length, 1, mode)
+    })
+  }
 })

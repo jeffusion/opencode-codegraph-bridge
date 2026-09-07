@@ -373,6 +373,24 @@ export function createCodeGraphPlugin(options = {}, dependencies = {}) {
     let managed = enabled && !!project.root
     let configCompleted = false
     let injectedMcp = null
+    let updateNotified = false
+
+    const notifyUpdate = async () => {
+      if (updateNotified) return
+      updateNotified = true
+      try {
+        await input.client?.tui?.showToast?.({
+          body: {
+            title: "CodeGraph Bridge",
+            message: "Update ready. Restart OpenCode to apply.",
+            variant: "info",
+            duration: 5000,
+          },
+        })
+      } catch {
+        // Notification failure must not turn a completed update into a failure.
+      }
+    }
 
     if (managed) {
       try {
@@ -432,7 +450,10 @@ export function createCodeGraphPlugin(options = {}, dependencies = {}) {
     const config = (config) => {
       if (enabled) {
         void Promise.resolve().then(() => updatePluginVersionFn(config, {
-          onSuccess: (version) => log(input, `opencode-codegraph-bridge updated to ${version}; restart required.`),
+          onSuccess: (version) => {
+            log(input, `opencode-codegraph-bridge updated to ${version}; restart required.`)
+            void notifyUpdate()
+          },
         })).catch((error) => log(input, `opencode-codegraph-bridge 版本检查已跳过：${error?.message || String(error)}`))
       }
       if (!managed || !runtime || !project.root) return
