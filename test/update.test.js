@@ -4,7 +4,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "n
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { parse } from "jsonc-parser"
-import { backgroundTaskForRoot, createCodeGraphPlugin, mcpConfig } from "../src/internal.js"
+import { createCodeGraphPlugin, mcpConfig } from "../src/internal.js"
 import { createVersionUpdater, PACKAGE_NAME, REGISTRY_URL } from "../src/update.js"
 
 // Keep updater tests independent from the repository package version.
@@ -388,13 +388,9 @@ test("缺少 SDK、同步异常、异步拒绝和悬挂通知不影响更新返�
           return new Promise(() => {})
         }
       }
-      const runtime = { nodePath: "/node", shimPath: "/shim", cliPath: "/cli", workerPath: "/worker" }
+      const runtime = { nodePath: "/node", cliPath: "/cli", workerPath: "/worker", launcherPath: "/launcher" }
       const hooks = await createCodeGraphPlugin({}, {
         resolveRuntime: () => runtime,
-        readStatus: async () => ({ ok: true, status: {
-          initialized: true, projectPath: root, lastIndexed: "2026-01-01T00:00:00.000Z",
-          fileCount: 1, index: { state: "complete", pendingRefs: 0 },
-        } }),
         updatePluginVersion: async (_config, { onSuccess }) => {
           onSuccess(TEST_LATEST_VERSION)
           onSuccess(TEST_LATEST_VERSION)
@@ -404,8 +400,7 @@ test("缺少 SDK、同步异常、异步拒绝和悬挂通知不影响更新返�
       })({ directory: root, client: mode === "no-client" ? undefined : client })
       const config = {}
       assert.equal(hooks.config(config), undefined)
-      assert.deepEqual(config.mcp.codegraph, mcpConfig(runtime, root))
-      await backgroundTaskForRoot(root)
+      assert.deepEqual(config.mcp.codegraph, mcpConfig(runtime))
       await new Promise(setImmediate)
       assert.equal(updated, true, mode)
       assert.equal(toastCalls, ["throw", "reject", "pending"].includes(mode) ? 1 : 0, mode)
