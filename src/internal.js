@@ -11,17 +11,10 @@ const LOCK_NAME = ".opencode-codegraph-auto.init.lock"
 const MAX_OUTPUT = 16 * 1024
 const STATUS_TIMEOUT_MS = 20_000
 const WORKER_TIMEOUT_MS = 10 * 60_000
-const RETRY_INTERVAL_MS = 30_000
 const CHILD_KILL_GRACE_MS = 3_000
-/** @type {Map<string, Promise<void>>} */
-const backgroundByRoot = new Map()
-/** @type {Map<string, boolean>} */
-const backgroundReady = new Map()
-/** @type {Map<string, number>} */
-const backgroundRetryAt = new Map()
 
 /** @typedef {{ enabled?: boolean }} CodeGraphBridgeOptions */
-/** @typedef {{ nodePath: string, shimPath: string, cliPath: string, workerPath: string }} Runtime */
+/** @typedef {{ nodePath: string, cliPath: string, workerPath: string, launcherPath: string }} Runtime */
 
 /**
  * Resolve only files from this plugin's own dependency tree. In particular,
@@ -32,15 +25,14 @@ const backgroundRetryAt = new Map()
  */
 export function resolveRuntime() {
   const packageJson = require.resolve("@colbymchenry/codegraph/package.json")
-  const packageRoot = dirname(packageJson)
   const packageRequire = createRequire(packageJson)
   const platformPackage = `@colbymchenry/codegraph-${process.platform}-${process.arch}`
   const nodeName = process.platform === "win32" ? "node.exe" : "node"
   return {
     nodePath: realpathSync(packageRequire.resolve(`${platformPackage}/${nodeName}`)),
-    shimPath: realpathSync(join(packageRoot, "npm-shim.js")),
     cliPath: realpathSync(packageRequire.resolve(`${platformPackage}/lib/dist/bin/codegraph.js`)),
     workerPath: realpathSync(join(dirname(fileURLToPath(import.meta.url)), "worker.js")),
+    launcherPath: realpathSync(join(dirname(fileURLToPath(import.meta.url)), "mcp-launcher.js")),
   }
 }
 
@@ -221,26 +213,22 @@ export function workerCommand(runtime, root, hostPid = process.pid) {
   }
 }
 
-/** @param {Runtime} runtime @param {string} root */
-export function mcpConfig(runtime, root) {
+/** @param {Runtime} runtime */
+export function mcpConfig(runtime) {
   return {
     type: "local",
-    command: [runtime.nodePath, runtime.shimPath, "serve", "--mcp", "--path", root],
+    command: [runtime.nodePath, "--liftoff-only", "--disable-warning=ExperimentalWarning", runtime.launcherPath],
     environment: { CODEGRAPH_NO_DOWNLOAD: "1" },
+    enabled: true,
   }
 }
 
-/** @param {any} config @param {Runtime} runtime @param {string} root */
-export function registerMcp(config, runtime, root) {
+/** @param {any} config @param {Runtime} runtime */
+export function registerMcp(config, runtime) {
   config.mcp ??= {}
   if (Object.prototype.hasOwnProperty.call(config.mcp, "codegraph")) return false
-  config.mcp.codegraph = mcpConfig(runtime, root)
+  config.mcp.codegraph = mcpConfig(runtime)
   return true
-}
-
-/** @param {string} root @returns {Promise<void> | null} */
-export function backgroundTaskForRoot(root) {
-  return backgroundByRoot.get(root) || null
 }
 
 /** @param {string} dataDir @param {string} root */
@@ -355,22 +343,17 @@ function log(input, message) {
 
 /**
  * @param {CodeGraphBridgeOptions} [options]
- * @param {{ resolveRuntime?: typeof resolveRuntime, readStatus?: typeof readStatus, spawnWorker?: Function, updatePluginVersion?: typeof updatePluginVersion, now?: () => number }} [dependencies]
+ * @param {{ resolveRuntime?: typeof resolveRuntime, updatePluginVersion?: typeof updatePluginVersion }} [dependencies]
  * @returns {import("@opencode-ai/plugin").Plugin}
  */
 export function createCodeGraphPlugin(options = {}, dependencies = {}) {
   const enabled = options.enabled !== false
   const resolveRuntimeFn = dependencies.resolveRuntime || resolveRuntime
-  const readStatusFn = dependencies.readStatus || readStatus
-  const spawnWorkerFn = dependencies.spawnWorker || spawnWorker
   const updatePluginVersionFn = dependencies.updatePluginVersion || updatePluginVersion
-  const nowFn = dependencies.now || Date.now
 
   return /** @type {import("@opencode-ai/plugin").Plugin} */ (async (input) => {
-    const project = normalizeProjectRoot(input.directory, input.worktree)
     let runtime = null
-    let ready = false
-    let managed = enabled && !!project.root
+    let managed = enabled
     let configCompleted = false
     let injectedMcp = null
     let updateNotified = false
@@ -399,51 +382,6 @@ export function createCodeGraphPlugin(options = {}, dependencies = {}) {
         managed = false
         log(input, `CodeGraph 依赖不可用，已跳过注册和索引：${error?.message || String(error)}`)
       }
-    } else if (enabled && project.reason) {
-      log(input, `CodeGraph 未启用：${project.reason}；不会自动扫描。`)
-    }
-
-    const startBackground = () => {
-      if (!configCompleted || !managed || !runtime || !project.root) return
-      const root = project.root
-      if (backgroundReady.get(root) === true) {
-        ready = configCompleted && managed
-        return
-      }
-      const existing = backgroundByRoot.get(root)
-      if (existing) {
-        existing.then(() => { ready = configCompleted && managed && backgroundReady.get(root) === true }).catch(() => {})
-        return
-      }
-      const now = nowFn()
-      if (backgroundRetryAt.has(root) && now - backgroundRetryAt.get(root) < RETRY_INTERVAL_MS) return
-      backgroundRetryAt.set(root, now)
-      const task = readStatusFn(runtime, root).then(({ status, ok, diagnostic }) => {
-        if (ok && isReadyStatus(status, root)) {
-          if (configCompleted && managed) {
-            ready = true
-            backgroundReady.set(root, true)
-          }
-          log(input, "CodeGraph 已有健康索引，跳过首次初始化、索引和同步。")
-          return
-        }
-        if (!ok && diagnostic) log(input, `CodeGraph 状态检查未成功，将尝试后台初始化：${diagnostic.trim().slice(0, 300)}`)
-        return spawnWorkerFn(input, runtime, root).then((result) => {
-          if (!result.success) {
-            log(input, `CodeGraph 首次索引未完成：${result.message}`)
-            return
-          }
-          return readStatusFn(runtime, root).then((after) => {
-            ready = configCompleted && managed && after.ok && isReadyStatus(after.status, root, true)
-            if (configCompleted && managed) backgroundReady.set(root, ready)
-            if (ready) log(input, "CodeGraph 后台首次索引完成，结构查询已可用。")
-            else log(input, "CodeGraph 索引进程报告成功，但状态尚未达到可用条件；不会注入成功提示。")
-          })
-        })
-      }).catch((error) => {
-        log(input, `CodeGraph 后台任务异常，聊天继续：${error?.message || String(error)}`)
-      }).finally(() => backgroundByRoot.delete(root))
-      backgroundByRoot.set(root, task)
     }
 
     /** @param {any} config */
@@ -456,49 +394,34 @@ export function createCodeGraphPlugin(options = {}, dependencies = {}) {
           },
         })).catch((error) => log(input, `opencode-codegraph-bridge 版本检查已跳过：${error?.message || String(error)}`))
       }
-      if (!managed || !runtime || !project.root) return
-      const safety = inspectCodeGraphData(project.root)
-      if (!safety.ok) {
-        managed = false
-        log(input, `CodeGraph 数据目录不安全，跳过 MCP 注册：${safety.reason}`)
-        return
-      }
+      if (!managed || !runtime) return
       if (Object.prototype.hasOwnProperty.call(config.mcp || {}, "codegraph")) {
-        if (config.mcp.codegraph === injectedMcp) {
-          startBackground()
-          return
-        }
+        if (config.mcp.codegraph === injectedMcp) return
         managed = false
         log(input, "检测到用户已有 mcp.codegraph 配置，保持原配置并停止插件接管。")
         return
       }
-      if (!registerMcp(config, runtime, project.root)) {
+      if (!registerMcp(config, runtime)) {
         managed = false
         return
       }
       injectedMcp = config.mcp.codegraph
       configCompleted = true
-      startBackground()
     }
 
     return {
       config,
       "experimental.chat.system.transform": async (_event, output) => {
-        if (!configCompleted || !managed || !project.root) return
-        if (!ready) {
-          void startBackground()
-          return
-        }
-        // Adapted from CodeGraph 1.6 installer MCP-only guidance.
-        if (output?.system) output.system.push(`When CodeGraph tools are available in this session, use their exploration capability first to locate and understand relevant code before broad searches or reading unrelated files. Follow their provided instructions and use returned context for targeted reads; avoid re-fetching context already available. If the tools are unavailable or results are insufficient or stale, fall back to permitted file-reading and search tools. Project root: ${JSON.stringify(project.root)}`)
+        if (!configCompleted || !managed) return
+        if (output?.system) output.system.push("When CodeGraph tools are available in this session, use their exploration capability first to locate and understand relevant code before broad searches or reading unrelated files. Follow their provided instructions and use returned context for targeted reads; avoid re-fetching context already available. If the tools are unavailable or results are insufficient or stale, fall back to permitted file-reading and search tools.")
       },
     }
   })
 }
 
-/** @param {any} input @param {Runtime} runtime @param {string} root */
-function spawnWorker(input, runtime, root) {
-  const { command, args } = workerCommand(runtime, root, process.pid)
+/** @param {Runtime} runtime @param {string} root @param {number} [hostPid] */
+export function runInitializationWorker(runtime, root, hostPid = process.pid) {
+  const { command, args } = workerCommand(runtime, root, hostPid)
   return runChild(command, args, {
     cwd: root,
     env: childEnv(),
@@ -509,9 +432,6 @@ function spawnWorker(input, runtime, root) {
     if (result.code !== 0) return { success: false, message: (payload?.message || result.stderr || `退出码 ${result.code}`).trim().slice(0, 500) }
     if (payload?.success !== true) return { success: false, message: (payload?.message || result.stderr || "worker 未报告成功").trim().slice(0, 500) }
     return { success: true, message: "ok" }
-  }).catch((error) => {
-    log(input, `CodeGraph worker 启动失败：${error?.message || String(error)}`)
-    return { success: false, message: error?.message || String(error) }
   })
 }
 

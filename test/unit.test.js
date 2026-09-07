@@ -7,7 +7,6 @@ import publicPlugin from "../src/index.js"
 import * as publicModule from "../src/index.js"
 import {
   acquireInitLock,
-  backgroundTaskForRoot,
   createCodeGraphPlugin,
   isReadyStatus,
   inspectCodeGraphData,
@@ -52,12 +51,19 @@ test("就绪条件拒绝空索引和不完整状态", () => {
 })
 
 test("MCP 注册只补充缺失键并保留用户配置", () => {
-  const runtime = { nodePath: "/opt/codegraph/node", shimPath: "/opt/codegraph/npm-shim.js", workerPath: "/opt/plugin/worker.js" }
+  const runtime = { nodePath: "/opt/codegraph/node", cliPath: "/opt/codegraph/cli.js", workerPath: "/opt/plugin/worker.js", launcherPath: "/opt/plugin/mcp-launcher.js" }
   const config = { mcp: { existing: { type: "remote" } } }
-  assert.equal(registerMcp(config, runtime, "/repo"), true)
-  assert.deepEqual(config.mcp.codegraph, mcpConfig(runtime, "/repo"))
+  assert.equal(registerMcp(config, runtime), true)
+  assert.deepEqual(config.mcp.codegraph, mcpConfig(runtime))
+  assert.deepEqual(config.mcp.codegraph.command, [
+    runtime.nodePath,
+    "--liftoff-only",
+    "--disable-warning=ExperimentalWarning",
+    runtime.launcherPath,
+  ])
+  assert.equal(config.mcp.codegraph.enabled, true)
   const user = { mcp: { codegraph: { enabled: false, command: ["user-server"] } } }
-  assert.equal(registerMcp(user, runtime, "/repo"), false)
+  assert.equal(registerMcp(user, runtime), false)
   assert.deepEqual(user.mcp.codegraph.command, ["user-server"])
 })
 
@@ -102,90 +108,25 @@ test("数据目录符号链接在 status 前被拒绝", async (t) => {
   }
 })
 
-test("system hook 只在 config 完成后非阻塞触发，并按 retryAt 节流复查", async () => {
-  const root = await mkdtemp(join(tmpdir(), "codegraph-bridge-retry-"))
-  let statusCalls = 0
-  let workerCalls = 0
-  let clock = 1_000
-  const runtime = { nodePath: "/node", shimPath: "/shim", cliPath: "/cli", workerPath: "/worker" }
+test("system hook 只在 MCP 配置注入后添加无路径 CodeGraph 提示", async () => {
+  const root = await mkdtemp(join(tmpdir(), "codegraph-bridge-prompt-"))
+  const runtime = { nodePath: "/node", cliPath: "/cli", workerPath: "/worker", launcherPath: "/launcher" }
   try {
     await mkdir(join(root, ".git"))
     const plugin = createCodeGraphPlugin({}, {
       resolveRuntime: () => runtime,
-      readStatus: async () => {
-        statusCalls += 1
-        return { status: null, ok: false, diagnostic: "mock failure" }
-      },
-      spawnWorker: async () => {
-        workerCalls += 1
-        return { success: false, message: "mock worker failure" }
-      },
-      now: () => clock,
     })
-    const hooks = await plugin({ directory: root, worktree: root, client: { app: { log: async () => {} } } })
-    await hooks["experimental.chat.system.transform"]({}, { system: [] })
-    assert.equal(statusCalls, 0, "config 完成前不得启动后台 status")
-
-    const config = {}
-    hooks.config(config)
-    assert.ok(config.mcp.codegraph)
-    const firstTask = backgroundTaskForRoot(root)
-    assert.ok(firstTask)
-    await firstTask
-    assert.equal(statusCalls, 1)
-    assert.equal(workerCalls, 1)
-
-    const notReadyOutput = { system: [] }
-    await hooks["experimental.chat.system.transform"]({}, notReadyOutput)
-    assert.deepEqual(notReadyOutput.system, [])
-    assert.equal(statusCalls, 1, "失败后 retryAt 窗口内不得重复 status/init")
-
-    clock += 30_001
-    await hooks["experimental.chat.system.transform"]({}, { system: [] })
-    const secondTask = backgroundTaskForRoot(root)
-    assert.ok(secondTask)
-    await secondTask
-    assert.equal(statusCalls, 2, "节流窗口后允许 status 复查")
-    assert.equal(workerCalls, 2)
-  } finally {
-    await rm(root, { recursive: true, force: true })
-  }
-})
-
-test("system hook 只在 ready 后注入英文 CodeGraph 提示并转义项目根路径", async () => {
-  const prefix = process.platform === "win32" ? "codegraph-bridge-prompt-" : 'codegraph-bridge-prompt-"'
-  const root = await mkdtemp(join(tmpdir(), prefix))
-  const runtime = { nodePath: "/node", shimPath: "/shim", cliPath: "/cli", workerPath: "/worker" }
-  try {
-    await mkdir(join(root, ".git"))
-    const plugin = createCodeGraphPlugin({}, {
-      resolveRuntime: () => runtime,
-      readStatus: async () => ({
-        status: {
-          initialized: true,
-          projectPath: root,
-          lastIndexed: "2026-01-01T00:00:00.000Z",
-          fileCount: 1,
-          index: { state: "complete", pendingRefs: 0 },
-        },
-        ok: true,
-      }),
-    })
-    const hooks = await plugin({ directory: root, worktree: root, client: { app: { log: async () => {} } } })
+    const hooks = await plugin({ client: { app: { log: async () => {} } } })
     const beforeConfig = { system: [] }
     await hooks["experimental.chat.system.transform"]({}, beforeConfig)
     assert.deepEqual(beforeConfig.system, [])
 
     const config = {}
     hooks.config(config)
-    const task = backgroundTaskForRoot(root)
-    assert.ok(task)
-    await task
-
     const output = { system: [] }
     await hooks["experimental.chat.system.transform"]({}, output)
     assert.deepEqual(output.system, [
-      `When CodeGraph tools are available in this session, use their exploration capability first to locate and understand relevant code before broad searches or reading unrelated files. Follow their provided instructions and use returned context for targeted reads; avoid re-fetching context already available. If the tools are unavailable or results are insufficient or stale, fall back to permitted file-reading and search tools. Project root: ${JSON.stringify(root)}`,
+      "When CodeGraph tools are available in this session, use their exploration capability first to locate and understand relevant code before broad searches or reading unrelated files. Follow their provided instructions and use returned context for targeted reads; avoid re-fetching context already available. If the tools are unavailable or results are insufficient or stale, fall back to permitted file-reading and search tools.",
     ])
   } finally {
     await rm(root, { recursive: true, force: true })
