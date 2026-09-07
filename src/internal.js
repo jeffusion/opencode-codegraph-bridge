@@ -4,6 +4,7 @@ import { homedir } from "node:os"
 import { dirname, join, parse, resolve, sep } from "node:path"
 import { fileURLToPath } from "node:url"
 import { spawn } from "node:child_process"
+import { updatePluginVersion } from "./update.js"
 
 const require = createRequire(import.meta.url)
 const LOCK_NAME = ".opencode-codegraph-auto.init.lock"
@@ -354,7 +355,7 @@ function log(input, message) {
 
 /**
  * @param {CodeGraphBridgeOptions} [options]
- * @param {{ resolveRuntime?: typeof resolveRuntime, readStatus?: typeof readStatus, spawnWorker?: Function, now?: () => number }} [dependencies]
+ * @param {{ resolveRuntime?: typeof resolveRuntime, readStatus?: typeof readStatus, spawnWorker?: Function, updatePluginVersion?: typeof updatePluginVersion, now?: () => number }} [dependencies]
  * @returns {import("@opencode-ai/plugin").Plugin}
  */
 export function createCodeGraphPlugin(options = {}, dependencies = {}) {
@@ -362,6 +363,7 @@ export function createCodeGraphPlugin(options = {}, dependencies = {}) {
   const resolveRuntimeFn = dependencies.resolveRuntime || resolveRuntime
   const readStatusFn = dependencies.readStatus || readStatus
   const spawnWorkerFn = dependencies.spawnWorker || spawnWorker
+  const updatePluginVersionFn = dependencies.updatePluginVersion || updatePluginVersion
   const nowFn = dependencies.now || Date.now
 
   return /** @type {import("@opencode-ai/plugin").Plugin} */ (async (input) => {
@@ -428,6 +430,11 @@ export function createCodeGraphPlugin(options = {}, dependencies = {}) {
 
     /** @param {any} config */
     const config = (config) => {
+      if (enabled) {
+        void Promise.resolve().then(() => updatePluginVersionFn(config, {
+          onSuccess: (version) => log(input, `opencode-codegraph-bridge updated to ${version}; restart required.`),
+        })).catch((error) => log(input, `opencode-codegraph-bridge 版本检查已跳过：${error?.message || String(error)}`))
+      }
       if (!managed || !runtime || !project.root) return
       const safety = inspectCodeGraphData(project.root)
       if (!safety.ok) {

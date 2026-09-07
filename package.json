@@ -27,12 +27,13 @@
     "LICENSE"
   ],
   "scripts": {
-    "test:unit": "node --test test/unit.test.js",
+    "test:unit": "node --test test/unit.test.js test/update.test.js",
     "test:integration": "node test/integration.test.js",
     "test:opencode": "node test/opencode-smoke.js"
   },
   "dependencies": {
-    "@colbymchenry/codegraph": "^1.6.0"
+    "@colbymchenry/codegraph": "^1.6.0",
+    "jsonc-parser": "^3.3.1"
   },
   "devDependencies": {
     "@opencode-ai/plugin": "1.16.2"
