@@ -7,6 +7,10 @@ import { parse } from "jsonc-parser"
 import { createCodeGraphPlugin } from "../src/internal.js"
 import { createVersionUpdater, PACKAGE_NAME, REGISTRY_URL } from "../src/update.js"
 
+// Keep updater tests independent from the repository package version.
+const TEST_CURRENT_VERSION = "0.1.1"
+const TEST_LATEST_VERSION = "0.2.0"
+
 async function tempRoot(prefix, callback) {
   const root = await mkdtemp(join(tmpdir(), prefix))
   try {
@@ -23,8 +27,12 @@ function localConfig(file, entry = PACKAGE_NAME) {
   }
 }
 
-function latestResponse(name = PACKAGE_NAME, version = "0.2.0") {
+function latestResponse(name = PACKAGE_NAME, version = TEST_LATEST_VERSION) {
   return { ok: true, text: async () => JSON.stringify({ name, version }) }
+}
+
+function testUpdater(options = {}) {
+  return createVersionUpdater({ version: TEST_CURRENT_VERSION, ...options })
 }
 
 test("更新 JSONC tuple 时只替换 spec 并保留注释、选项和 CRLF", async () => {
@@ -37,7 +45,7 @@ test("更新 JSONC tuple 时只替换 spec 并保留注释、选项和 CRLF", as
     await writeFile(file, original)
     let calls = 0
     let requestedUrl = ""
-    const update = createVersionUpdater({
+    const update = testUpdater({
       fetch: async (url) => {
         calls += 1
         requestedUrl = url
@@ -59,16 +67,16 @@ test("更新 JSONC tuple 时只替换 spec 并保留注释、选项和 CRLF", as
     assert.match(changed, /preserve this comment/)
     assert.match(changed, /\r\n/)
     assert.match(changed, /"profile": "keep"/)
-    assert.equal(changed, original.replace(`"${PACKAGE_NAME}"`, `"${PACKAGE_NAME}@0.2.0"`))
-    assert.deepEqual(parse(changed).plugin, [[`${PACKAGE_NAME}@0.2.0`, { enabled: false, profile: "keep" }]])
+    assert.equal(changed, original.replace(`"${PACKAGE_NAME}"`, `"${PACKAGE_NAME}@${TEST_LATEST_VERSION}"`))
+    assert.deepEqual(parse(changed).plugin, [[`${PACKAGE_NAME}@${TEST_LATEST_VERSION}`, { enabled: false, profile: "keep" }]])
     assert.deepEqual(parse(changed).other, { keep: true })
 
     const plainFile = join(root, "config.json")
     await writeFile(plainFile, JSON.stringify({ plugin: [PACKAGE_NAME], keep: "other" }))
     assert.equal(await update(localConfig(plainFile)), true)
     const plainChanged = await readFile(plainFile, "utf8")
-    assert.equal(plainChanged, JSON.stringify({ plugin: [`${PACKAGE_NAME}@0.2.0`], keep: "other" }))
-    assert.deepEqual(parse(plainChanged).plugin, [`${PACKAGE_NAME}@0.2.0`])
+    assert.equal(plainChanged, JSON.stringify({ plugin: [`${PACKAGE_NAME}@${TEST_LATEST_VERSION}`], keep: "other" }))
+    assert.deepEqual(parse(plainChanged).plugin, [`${PACKAGE_NAME}@${TEST_LATEST_VERSION}`])
     assert.equal(calls, 1)
 
     const compactFile = join(root, "compact.json")
@@ -76,7 +84,7 @@ test("更新 JSONC tuple 时只替换 spec 并保留注释、选项和 CRLF", as
     await writeFile(compactFile, compactOriginal)
     const compactEntry = [PACKAGE_NAME, { enabled: false }]
     assert.equal(await update(localConfig(compactFile, compactEntry)), true)
-    assert.equal(await readFile(compactFile, "utf8"), compactOriginal.replace(`"${PACKAGE_NAME}"`, `"${PACKAGE_NAME}@0.2.0"`))
+    assert.equal(await readFile(compactFile, "utf8"), compactOriginal.replace(`"${PACKAGE_NAME}"`, `"${PACKAGE_NAME}@${TEST_LATEST_VERSION}"`))
   })
 })
 
@@ -86,13 +94,20 @@ test("无更新、降级和未来 pin 都不写入", async () => {
     const original = JSON.stringify({ plugin: [PACKAGE_NAME] }, null, 2)
     await writeFile(file, original)
 
-    const equal = createVersionUpdater({ fetch: async () => latestResponse(PACKAGE_NAME, "0.1.1") })
+    const equal = testUpdater({ fetch: async () => latestResponse(PACKAGE_NAME, TEST_CURRENT_VERSION) })
     assert.equal(await equal(localConfig(file)), false)
     assert.equal(await readFile(file, "utf8"), original)
 
+    const sameVersionEntry = `${PACKAGE_NAME}@${TEST_CURRENT_VERSION}`
+    const sameVersionText = JSON.stringify({ plugin: [sameVersionEntry] }, null, 2)
+    await writeFile(file, sameVersionText)
+    const sameVersion = testUpdater({ fetch: async () => latestResponse(PACKAGE_NAME, TEST_CURRENT_VERSION) })
+    assert.equal(await sameVersion(localConfig(file, sameVersionEntry)), false)
+    assert.equal(await readFile(file, "utf8"), sameVersionText)
+
     const futureEntry = `${PACKAGE_NAME}@0.3.0`
     await writeFile(file, JSON.stringify({ plugin: [futureEntry] }, null, 2))
-    const future = createVersionUpdater({ fetch: async () => latestResponse(PACKAGE_NAME, "0.2.0") })
+    const future = testUpdater({ fetch: async () => latestResponse(PACKAGE_NAME, TEST_LATEST_VERSION) })
     assert.equal(await future(localConfig(file, futureEntry)), false)
     assert.equal(await readFile(file, "utf8"), JSON.stringify({ plugin: [futureEntry] }, null, 2))
   })
@@ -108,11 +123,11 @@ test("非法响应、prerelease、超大版本和 timeout 都安全跳过", asyn
       latestResponse(PACKAGE_NAME, "0.2.0-beta.1"),
       latestResponse(PACKAGE_NAME, "9007199254740992.0.0"),
     ]) {
-      const update = createVersionUpdater({ fetch: async () => response })
+      const update = testUpdater({ fetch: async () => response })
       assert.equal(await update(localConfig(file)), false)
     }
     let aborted = false
-    const timeout = createVersionUpdater({
+    const timeout = testUpdater({
       timeoutMs: 10,
       fetch: async (_url, options) => {
         options.signal.addEventListener("abort", () => { aborted = true })
@@ -122,7 +137,7 @@ test("非法响应、prerelease、超大版本和 timeout 都安全跳过", asyn
     assert.equal(await timeout(localConfig(file)), false)
     assert.equal(aborted, true)
 
-    const httpError = createVersionUpdater({
+    const httpError = testUpdater({
       fetch: async (_url, options) => {
         assert.equal(options.redirect, "error")
         return { ok: false, status: 503 }
@@ -130,7 +145,7 @@ test("非法响应、prerelease、超大版本和 timeout 都安全跳过", asyn
     })
     assert.equal(await httpError(localConfig(file)), false)
 
-    const oversized = createVersionUpdater({
+    const oversized = testUpdater({
       fetch: async (_url, options) => {
         assert.equal(options.redirect, "error")
         return {
@@ -147,7 +162,7 @@ test("非法响应、prerelease、超大版本和 timeout 都安全跳过", asyn
     assert.equal(await oversized(localConfig(file)), false)
 
     let cancelled = false
-    const hangingBody = createVersionUpdater({
+    const hangingBody = testUpdater({
       timeoutMs: 10,
       fetch: async (_url, options) => {
         assert.equal(options.redirect, "error")
@@ -182,7 +197,7 @@ test("来源不明确、重复候选、重复键和 file URL 不查 registry", a
     await writeFile(join(globalDir, "config.json"), globalText)
     await writeFile(join(globalDir, "opencode.json"), globalText)
     let calls = 0
-    const update = createVersionUpdater({ fetch: async () => { calls += 1; return latestResponse() } })
+    const update = testUpdater({ fetch: async () => { calls += 1; return latestResponse() } })
     const globalConfig = {
       plugin: [globalEntry],
       plugin_origins: [{ spec: globalEntry, source: globalDir, scope: "global" }],
@@ -202,12 +217,12 @@ test("来源不明确、重复候选、重复键和 file URL 不查 registry", a
 
     const globalFile = join(root, "global-config.json")
     await writeFile(globalFile, JSON.stringify({ plugin: [PACKAGE_NAME] }))
-    const globalFileUpdate = createVersionUpdater({ fetch: async () => latestResponse() })
+    const globalFileUpdate = testUpdater({ fetch: async () => latestResponse() })
     assert.equal(await globalFileUpdate({
       plugin: [PACKAGE_NAME],
       plugin_origins: [{ spec: PACKAGE_NAME, source: globalFile, scope: "global" }],
     }), true)
-    assert.deepEqual(parse(await readFile(globalFile, "utf8")).plugin, [`${PACKAGE_NAME}@0.2.0`])
+    assert.deepEqual(parse(await readFile(globalFile, "utf8")).plugin, [`${PACKAGE_NAME}@${TEST_LATEST_VERSION}`])
 
     const duplicate = join(root, "duplicate.json")
     await writeFile(duplicate, `{"plugin":["${PACKAGE_NAME}"],"plugin":["${PACKAGE_NAME}"]}`)
@@ -223,17 +238,17 @@ test("只读、符号链接、外部变更和 busy 锁都不写入，同进程�
     await writeFile(file, original)
     const originalMode = (await stat(file)).mode & 0o7777
     await chmod(file, 0o444)
-    const readOnly = createVersionUpdater({ fetch: async () => latestResponse() })
+    const readOnly = testUpdater({ fetch: async () => latestResponse() })
     assert.equal(await readOnly(localConfig(file)), false)
     await chmod(file, 0o644)
 
     const link = join(root, "link.json")
     await symlink(file, link)
-    const symlinked = createVersionUpdater({ fetch: async () => latestResponse() })
+    const symlinked = testUpdater({ fetch: async () => latestResponse() })
     assert.equal(await symlinked(localConfig(link)), false)
 
     await writeFile(file, original)
-    const changedDuringFetch = createVersionUpdater({
+    const changedDuringFetch = testUpdater({
       fetch: async () => {
         await chmod(file, 0o444)
         return latestResponse()
@@ -245,13 +260,13 @@ test("只读、符号链接、外部变更和 busy 锁都不写入，同进程�
     await writeFile(file, original)
 
     await mkdir(join(root, ".opencode-codegraph-bridge.update.lock"))
-    const busy = createVersionUpdater({ fetch: async () => latestResponse() })
+    const busy = testUpdater({ fetch: async () => latestResponse() })
     assert.equal(await busy(localConfig(file)), false)
     await rm(join(root, ".opencode-codegraph-bridge.update.lock"), { recursive: true })
 
     let calls = 0
     let writes = 0
-    const deduped = createVersionUpdater({
+    const deduped = testUpdater({
       fetch: async () => { calls += 1; return latestResponse() },
       onWrite: () => { writes += 1 },
     })
@@ -261,7 +276,7 @@ test("只读、符号链接、外部变更和 busy 锁都不写入，同进程�
     assert.equal(calls, 1)
     assert.equal(writes, 1)
     assert.equal(await deduped(config), false)
-    assert.equal(await readFile(file, "utf8"), JSON.stringify({ plugin: [`${PACKAGE_NAME}@0.2.0`] }))
+    assert.equal(await readFile(file, "utf8"), JSON.stringify({ plugin: [`${PACKAGE_NAME}@${TEST_LATEST_VERSION}`] }))
     assert.equal((await stat(file)).mode & 0o7777, originalMode)
   })
 })
@@ -274,7 +289,7 @@ test("config 启动 updater 不阻塞，nongit 也更新；disabled 完全跳过
     const pending = new Promise((resolve) => { release = resolve })
     const updatePluginVersion = async (_config, callbacks) => {
       calls += 1
-      callbacks.onSuccess("0.2.0")
+      callbacks.onSuccess(TEST_LATEST_VERSION)
       await pending
     }
     const hooks = await createCodeGraphPlugin({}, { updatePluginVersion })({
@@ -285,7 +300,7 @@ test("config 启动 updater 不阻塞，nongit 也更新；disabled 完全跳过
     assert.equal(hooks.config({}), undefined)
     await Promise.resolve()
     assert.equal(calls, 1)
-    assert.ok(logs.some((message) => message.includes("0.2.0") && message.includes("restart required")))
+    assert.ok(logs.some((message) => message.includes(TEST_LATEST_VERSION) && message.includes("restart required")))
     release()
 
     let disabledCalls = 0
