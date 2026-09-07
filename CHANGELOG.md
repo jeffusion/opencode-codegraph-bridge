@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/jeffusion/opencode-codegraph-bridge/compare/v0.3.1...v0.4.0) (2026-09-07)
+
+
+### Features
+
+* add install command and simplify update notice ([93fcd30](https://github.com/jeffusion/opencode-codegraph-bridge/commit/93fcd30ba3f9f1b66b9bcfc3b2ec716e0c7d410e))
+
 ## [0.3.1](https://github.com/jeffusion/opencode-codegraph-bridge/compare/v0.3.0...v0.3.1) (2026-09-07)
 
 
