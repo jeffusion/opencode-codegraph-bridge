@@ -1,18 +1,40 @@
-name: Release
+name: Release Please
 
 on:
-  release:
-    types: [published]
+  push:
+    branches: [main]
+  workflow_dispatch:
 
 permissions: {}
 
 concurrency:
-  group: npm-release-${{ github.event.release.tag_name }}
+  group: release-please-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - name: Release Please
+        id: release
+        uses: googleapis/release-please-action@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          config-file: .release-please-config.json
+          manifest-file: .release-please-manifest.json
+          release-type: node
+          path: .
+
   publish:
-    if: ${{ github.event.release.prerelease == false }}
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created == 'true' && vars.NPM_PUBLISH_ENABLED == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -21,7 +43,7 @@ jobs:
       - name: Checkout published release tag
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ needs.release-please.outputs.tag_name }}
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
@@ -30,7 +52,7 @@ jobs:
           package-manager-cache: false
       - name: Verify stable release and tool versions
         env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_TAG: ${{ needs.release-please.outputs.tag_name }}
         run: |
           node --version
           npm --version

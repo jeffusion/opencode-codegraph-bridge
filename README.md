@@ -29,6 +29,14 @@ realpath src/index.js  # 将输出转换为 file:// URL 放入 OpenCode 配置
 }
 ```
 
+## 版本与发布
+
+版本号、`CHANGELOG.md`、`package.json` 和 `package-lock.json` 由 Release Please 自动维护。`.release-please-manifest.json` 首发保持为空对象，根目录 `.` 使用 Node strategy；配置支持 `initial-version: 0.1.0`。在 `0.x` 期间，规范 `feat` 产生 minor、`fix` 产生 patch，breaking change 产生 minor，不会自动合并 Release Please PR。
+
+当前唯一初始 feature commit `85df0cd4e7c00befe7ba16433c505969e904e95d` 会由首次 Release Please PR 提议 `0.1.0`。用户审核并合并该 PR 后，Release Please 创建 GitHub `v0.1.0` Release；默认 `NPM_PUBLISH_ENABLED` 未设置，发布 job 会跳过。用户随后手工发布 npm `0.1.0`、配置 Trusted Publishing，再在 GitHub 仓库变量中手工设置 `NPM_PUBLISH_ENABLED=true`。以后合并的 Release Please PR 才会触发自动发布；npm 版本不可重复使用。
+
+GitHub Token 创建的 bot PR 通常不会触发 `pull_request` CI。合并 Release Please PR 前可在 Actions → CI → Run workflow 手工选择发版分支，或运行 `gh workflow run ci.yml --ref <发版分支>`；不要据此声称 bot PR 已经通过 CI。发布 workflow 自身仍会重新执行完整测试和打包检查。
+
 插件使用自己的依赖解析 CodeGraph 及其匹配平台包，不使用全局安装路径，也不把 Bun 的 `process.execPath` 当作 Node。
 
 ## 行为与边界

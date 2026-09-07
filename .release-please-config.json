@@ -1,0 +1,13 @@
+{
+  "release-type": "node",
+  "packages": {
+    ".": {
+      "release-type": "node"
+    }
+  },
+  "initial-version": "0.1.0",
+  "include-component-in-tag": false,
+  "include-v-in-tag": true,
+  "bump-minor-pre-major": true,
+  "bump-patch-for-minor-pre-major": false
+}
