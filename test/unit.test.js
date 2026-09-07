@@ -28,6 +28,9 @@ test("enabled 开关可关闭所有接管", async () => {
     const config = {}
     hooks.config(config)
     assert.deepEqual(config, {})
+    const output = { system: [] }
+    await hooks["experimental.chat.system.transform"]({}, output)
+    assert.deepEqual(output.system, [])
   } finally {
     await rm(root, { recursive: true, force: true })
   }
@@ -132,7 +135,9 @@ test("system hook 只在 config 完成后非阻塞触发，并按 retryAt 节流
     assert.equal(statusCalls, 1)
     assert.equal(workerCalls, 1)
 
-    await hooks["experimental.chat.system.transform"]({}, { system: [] })
+    const notReadyOutput = { system: [] }
+    await hooks["experimental.chat.system.transform"]({}, notReadyOutput)
+    assert.deepEqual(notReadyOutput.system, [])
     assert.equal(statusCalls, 1, "失败后 retryAt 窗口内不得重复 status/init")
 
     clock += 30_001
@@ -142,6 +147,46 @@ test("system hook 只在 config 完成后非阻塞触发，并按 retryAt 节流
     await secondTask
     assert.equal(statusCalls, 2, "节流窗口后允许 status 复查")
     assert.equal(workerCalls, 2)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("system hook 只在 ready 后注入英文 CodeGraph 提示并转义项目根路径", async () => {
+  const prefix = process.platform === "win32" ? "codegraph-bridge-prompt-" : 'codegraph-bridge-prompt-"'
+  const root = await mkdtemp(join(tmpdir(), prefix))
+  const runtime = { nodePath: "/node", shimPath: "/shim", cliPath: "/cli", workerPath: "/worker" }
+  try {
+    await mkdir(join(root, ".git"))
+    const plugin = createCodeGraphPlugin({}, {
+      resolveRuntime: () => runtime,
+      readStatus: async () => ({
+        status: {
+          initialized: true,
+          projectPath: root,
+          lastIndexed: "2026-01-01T00:00:00.000Z",
+          fileCount: 1,
+          index: { state: "complete", pendingRefs: 0 },
+        },
+        ok: true,
+      }),
+    })
+    const hooks = await plugin({ directory: root, worktree: root, client: { app: { log: async () => {} } } })
+    const beforeConfig = { system: [] }
+    await hooks["experimental.chat.system.transform"]({}, beforeConfig)
+    assert.deepEqual(beforeConfig.system, [])
+
+    const config = {}
+    hooks.config(config)
+    const task = backgroundTaskForRoot(root)
+    assert.ok(task)
+    await task
+
+    const output = { system: [] }
+    await hooks["experimental.chat.system.transform"]({}, output)
+    assert.deepEqual(output.system, [
+      `When CodeGraph tools are available in this session, use their exploration capability first to locate and understand relevant code before broad searches or reading unrelated files. Follow their provided instructions and use returned context for targeted reads; avoid re-fetching context already available. If the tools are unavailable or results are insufficient or stale, fall back to permitted file-reading and search tools. Project root: ${JSON.stringify(root)}`,
+    ])
   } finally {
     await rm(root, { recursive: true, force: true })
   }

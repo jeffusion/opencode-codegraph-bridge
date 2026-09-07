@@ -461,7 +461,8 @@ export function createCodeGraphPlugin(options = {}, dependencies = {}) {
           void startBackground()
           return
         }
-        if (output?.system) output.system.push(`代码结构问题优先使用 CodeGraph MCP 工具；文本检索仍可使用 grep。项目根目录：${JSON.stringify(project.root)}。`)
+        // Adapted from CodeGraph 1.6 installer MCP-only guidance.
+        if (output?.system) output.system.push(`When CodeGraph tools are available in this session, use their exploration capability first to locate and understand relevant code before broad searches or reading unrelated files. Follow their provided instructions and use returned context for targeted reads; avoid re-fetching context already available. If the tools are unavailable or results are insufficient or stale, fall back to permitted file-reading and search tools. Project root: ${JSON.stringify(project.root)}`)
       },
     }
   })
