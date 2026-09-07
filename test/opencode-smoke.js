@@ -57,7 +57,7 @@ async function waitForMcp(port, root, server) {
 }
 
 async function stopServer(server) {
-  let closed = false
+  let leaderClosedFlag = false
   const killTree = (signal) => {
     try {
       process.kill(process.platform === "win32" ? server.process.pid : -server.process.pid, signal)
@@ -65,18 +65,42 @@ async function stopServer(server) {
       // Process may have exited between polling and termination.
     }
   }
-  killTree("SIGTERM")
-  await new Promise((resolve) => {
-    const timer = setTimeout(() => {
-      if (!closed) killTree("SIGKILL")
+  const leaderClosed = new Promise((resolve) => {
+    if (server.process.exitCode !== null || server.process.signalCode !== null) {
+      leaderClosedFlag = true
       resolve()
-    }, 5_000)
+      return
+    }
     server.process.once("close", () => {
-      closed = true
-      clearTimeout(timer)
+      leaderClosedFlag = true
       resolve()
     })
   })
+  const groupAlive = () => {
+    if (process.platform === "win32") return server.process.exitCode === null && server.process.signalCode === null
+    try {
+      process.kill(-server.process.pid, 0)
+      return true
+    } catch (error) {
+      return error?.code === "EPERM"
+    }
+  }
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  const waitForGroupGone = async (timeoutMs) => {
+    const deadline = Date.now() + timeoutMs
+    while (groupAlive() && Date.now() < deadline) await wait(100)
+    return !groupAlive()
+  }
+
+  killTree("SIGTERM")
+  await Promise.race([leaderClosed, wait(5_000)])
+  if (groupAlive()) killTree("SIGKILL")
+  await Promise.race([leaderClosed, wait(5_000)])
+  if (!(await waitForGroupGone(5_000))) throw new Error("OpenCode 自有进程组在终止宽限后仍存活")
+  if (!leaderClosedFlag) {
+    await Promise.race([leaderClosed, wait(5_000)])
+    if (!leaderClosedFlag) throw new Error("OpenCode 自有主进程未发送 close")
+  }
 }
 
 async function main() {
@@ -146,10 +170,16 @@ async function main() {
     assert.deepEqual(Object.keys(effective.mcp || {}), ["codegraph"], "effective config 的 MCP 必须只有动态 CodeGraph")
     console.log("OpenCode smoke passed: isolated file-URL plugin dynamically connected CodeGraph MCP")
   } finally {
-    if (server) await stopServer(server)
-    if (hooksSnapshot) assert.deepEqual(await directorySnapshot(join(root, ".git", "hooks")), hooksSnapshot, "插件不得修改 Git hooks")
-    if (globalAgentsHash !== undefined) assert.equal(await fileHash(join(homedir(), ".config", "opencode", "AGENTS.md")), globalAgentsHash, "插件不得修改全局 AGENTS.md")
-    await rm(root, { recursive: true, force: true })
+    try {
+      if (server) await stopServer(server)
+    } finally {
+      try {
+        if (hooksSnapshot) assert.deepEqual(await directorySnapshot(join(root, ".git", "hooks")), hooksSnapshot, "插件不得修改 Git hooks")
+        if (globalAgentsHash !== undefined) assert.equal(await fileHash(join(homedir(), ".config", "opencode", "AGENTS.md")), globalAgentsHash, "插件不得修改全局 AGENTS.md")
+      } finally {
+        await rm(root, { recursive: true, force: true, maxRetries: 4, retryDelay: 250 })
+      }
+    }
   }
 }
 

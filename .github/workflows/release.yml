@@ -29,8 +29,6 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           config-file: .release-please-config.json
           manifest-file: .release-please-manifest.json
-          release-type: node
-          path: .
 
   publish:
     needs: release-please
