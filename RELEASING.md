@@ -43,7 +43,7 @@ git push origin main
 
 ## CI 与失败重跑
 
-GitHub Token 创建的 Release Please PR 通常不会触发 `pull_request` CI。合并前可在 Actions → CI → Run workflow 手工选择发版分支，或运行：
+GitHub Token 创建的 Release Please PR 通常不会触发 `pull_request` CI；Release Please 创建或更新可信的同仓库 PR 后，`release.yml` 会用 `GITHUB_TOKEN` 自动 dispatch `ci.yml` 到该 PR head。不要把原 `pull_request` 的 `action_required` 误称为通过，应查看 dispatch workflow 的同一 SHA。需要手工排障时可在 Actions → CI → Run workflow 选择发版分支，或运行：
 
 ```sh
 gh workflow run ci.yml --ref <发版分支>

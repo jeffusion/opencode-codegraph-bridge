@@ -15,6 +15,7 @@ jobs:
   release-please:
     runs-on: ubuntu-latest
     permissions:
+      actions: write
       contents: write
       issues: write
       pull-requests: write
@@ -29,6 +30,61 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           config-file: .release-please-config.json
           manifest-file: .release-please-manifest.json
+      - name: Run CI for changed Release Please PR
+        if: ${{ steps.release.outputs.release_created != 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          RP_PR: ${{ steps.release.outputs.pr }}
+          RP_PRS: ${{ steps.release.outputs.prs }}
+          RP_PRS_CREATED: ${{ steps.release.outputs.prs_created }}
+        run: |
+          node <<'NODE'
+          const { execFileSync } = require('node:child_process')
+          const repo = process.env.GITHUB_REPOSITORY
+          if (!/^[^/]+\/[^/]+$/.test(repo)) throw new Error(`非法仓库标识: ${repo}`)
+          const nonEmpty = (value) => value && !['0', '[]', 'null', 'undefined'].includes(value.trim())
+          let prsOutput = null
+          try { prsOutput = JSON.parse(process.env.RP_PRS || '') } catch {}
+          const prsChanged = Array.isArray(prsOutput) ? prsOutput.length > 0 : nonEmpty(process.env.RP_PRS)
+          const prsCreated = /^true$/i.test(process.env.RP_PRS_CREATED || '') || Number(process.env.RP_PRS_CREATED || 0) > 0
+          const changed = nonEmpty(process.env.RP_PR) || prsChanged || prsCreated
+          if (!changed) {
+            console.log('Release Please 未创建或更新 PR，跳过 CI dispatch。')
+            process.exit(0)
+          }
+          const listed = JSON.parse(execFileSync('gh', [
+            'pr', 'list', '--repo', repo, '--base', 'main', '--state', 'open',
+            '--label', 'autorelease: pending',
+            '--json', 'number,headRefName,headRefOid,author,headRepositoryOwner',
+          ], { encoding: 'utf8' }))
+          if (listed.length !== 1) {
+            console.log(`当前 main Release Please PR 数量为 ${listed.length}，跳过不安全 dispatch。`)
+            process.exit(0)
+          }
+          const candidate = listed[0]
+          if (!Number.isInteger(candidate.number)) throw new Error('Release Please PR number 无效')
+          const detail = JSON.parse(execFileSync('gh', ['api', `repos/${repo}/pulls/${candidate.number}`], { encoding: 'utf8' }))
+          const owner = repo.split('/')[0]
+          const listedOwner = typeof candidate.headRepositoryOwner === 'string'
+            ? candidate.headRepositoryOwner
+            : candidate.headRepositoryOwner?.login
+          const valid = candidate.author?.is_bot === true &&
+            listedOwner === owner &&
+            typeof candidate.headRefName === 'string' &&
+            candidate.headRefName.startsWith('release-please--branches--main') &&
+            detail.user?.login === 'github-actions[bot]' &&
+            detail.base?.ref === 'main' &&
+            detail.head?.repo?.full_name === repo &&
+            detail.head?.ref === candidate.headRefName &&
+            detail.head?.sha === candidate.headRefOid
+          if (!valid) {
+            console.log('Release Please PR 元数据未通过同仓库/机器人/main/head 校验，跳过 CI dispatch。')
+            process.exit(0)
+          }
+          execFileSync('gh', ['workflow', 'run', 'ci.yml', '--repo', repo, '--ref', detail.head.ref], { stdio: 'inherit' })
+          console.log(`已为 Release Please PR #${candidate.number} 的 ${detail.head.ref}@${detail.head.sha} dispatch ci.yml。`)
+          NODE
 
   publish:
     needs: release-please
