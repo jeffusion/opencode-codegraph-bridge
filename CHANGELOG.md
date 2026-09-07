@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/jeffusion/opencode-codegraph-bridge/compare/v0.4.0...v0.4.1) (2026-09-07)
+
+
+### Bug Fixes
+
+* use rootless per-project MCP launcher across restarts ([12a8728](https://github.com/jeffusion/opencode-codegraph-bridge/commit/12a87289d936eb1fda42df19bf180e598c7c058a))
+
 ## [0.4.0](https://github.com/jeffusion/opencode-codegraph-bridge/compare/v0.3.1...v0.4.0) (2026-09-07)
 
 
