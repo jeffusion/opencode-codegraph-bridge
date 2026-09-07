@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/jeffusion/opencode-codegraph-bridge/compare/v0.3.0...v0.3.1) (2026-09-07)
+
+
+### Bug Fixes
+
+* identify plugin in update notification ([d5bba84](https://github.com/jeffusion/opencode-codegraph-bridge/commit/d5bba8463af7061c10778179f5dac2702c487d50))
+
 ## [0.3.0](https://github.com/jeffusion/opencode-codegraph-bridge/compare/v0.2.1...v0.3.0) (2026-09-07)
 
 
