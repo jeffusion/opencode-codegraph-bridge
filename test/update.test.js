@@ -333,7 +333,7 @@ test("更新通知使用原生英文参数，每个插件实例只通知一次",
     callbacks[1].onSuccess(TEST_LATEST_VERSION)
     assert.deepEqual(toasts, [{ body: {
       title: "CodeGraph Bridge",
-      message: "Update ready. Restart OpenCode to apply.",
+      message: "CodeGraph Bridge update ready. Restart OpenCode to apply.",
       variant: "info",
       duration: 5000,
     } }])

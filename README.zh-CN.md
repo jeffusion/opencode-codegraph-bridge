@@ -70,7 +70,7 @@ CodeGraph 能回答纯文本搜索难以回答的代码结构问题，但需要�
 
 当前 OpenCode 会话不会热加载。更新成功后，支持原生 OpenCode notification 的客户端会收到标题为 `CodeGraph Bridge` 的 OpenCode 通知：
 
-> Update ready. Restart OpenCode to apply.
+> CodeGraph Bridge update ready. Restart OpenCode to apply.
 
 通知是否可见取决于客户端的原生 OpenCode notification 支持。更新器不会修改 CodeGraph 依赖、安装全局工具，或更改你的 npm registry 设置。
 

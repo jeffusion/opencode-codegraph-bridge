@@ -70,7 +70,7 @@ When enabled, the plugin checks the official npm registry once at startup. If Op
 
 The current OpenCode session is not hot-reloaded. After a successful update, supported OpenCode clients receive an OpenCode notification titled `CodeGraph Bridge` with:
 
-> Update ready. Restart OpenCode to apply.
+> CodeGraph Bridge update ready. Restart OpenCode to apply.
 
 Notification availability depends on the client's native OpenCode notification support. The updater does not change CodeGraph dependencies, install global tools, or alter your npm registry setting.
 
