@@ -1,6 +1,6 @@
 {
   "name": "opencode-codegraph-bridge",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "CodeGraph Bridge for OpenCode：自动注册、后台索引与动态提示插件",
   "license": "MIT",
   "repository": {
