@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/jeffusion/opencode-codegraph-bridge/compare/v0.2.0...v0.2.1) (2026-09-07)
+
+
+### Bug Fixes
+
+* **test:** decouple updater fixtures from package version ([5ff49fb](https://github.com/jeffusion/opencode-codegraph-bridge/commit/5ff49fba7236b56346cfbaa1a26efced201165b3))
+
 ## [0.2.0](https://github.com/jeffusion/opencode-codegraph-bridge/compare/v0.1.1...v0.2.0) (2026-09-07)
 
 
