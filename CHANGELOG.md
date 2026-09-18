@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.2](https://github.com/jeffusion/opencode-codegraph-bridge/compare/v0.4.1...v0.4.2) (2026-09-18)
+
+
+### Bug Fixes
+
+* skip CodeGraph MCP outside safe Git roots ([414391d](https://github.com/jeffusion/opencode-codegraph-bridge/commit/414391de578732674d26918f06a860431d4572e8))
+
 ## [0.4.1](https://github.com/jeffusion/opencode-codegraph-bridge/compare/v0.4.0...v0.4.1) (2026-09-07)
 
 
