@@ -401,6 +401,14 @@ export function createCodeGraphPlugin(options = {}, dependencies = {}) {
         log(input, "检测到用户已有 mcp.codegraph 配置，保持原配置并停止插件接管。")
         return
       }
+      // 提前用 launcher 同一套判定：不安全/非 Git 根时不注册 MCP，
+      // 避免 launcher 在 handshake 前退出导致 MCP error -32000。
+      const project = normalizeProjectRoot(input?.directory, input?.worktree)
+      if (!project.root) {
+        managed = false
+        log(input, `项目根目录不满足条件（${project.reason}），不注册 CodeGraph MCP。`)
+        return
+      }
       if (!registerMcp(config, runtime)) {
         managed = false
         return

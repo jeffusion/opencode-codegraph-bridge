@@ -1,7 +1,7 @@
 import test from "node:test"
 import assert from "node:assert/strict"
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import publicPlugin from "../src/index.js"
 import * as publicModule from "../src/index.js"
@@ -116,7 +116,11 @@ test("system hook 只在 MCP 配置注入后添加无路径 CodeGraph 提示", a
     const plugin = createCodeGraphPlugin({}, {
       resolveRuntime: () => runtime,
     })
-    const hooks = await plugin({ client: { app: { log: async () => {} } } })
+    const hooks = await plugin({
+      directory: root,
+      worktree: root,
+      client: { app: { log: async () => {} } },
+    })
     const beforeConfig = { system: [] }
     await hooks["experimental.chat.system.transform"]({}, beforeConfig)
     assert.deepEqual(beforeConfig.system, [])
@@ -130,6 +134,25 @@ test("system hook 只在 MCP 配置注入后添加无路径 CodeGraph 提示", a
     ])
   } finally {
     await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("home 与非 Git 根不注入 MCP", async () => {
+  const runtime = { nodePath: "/node", cliPath: "/cli", workerPath: "/worker", launcherPath: "/launcher" }
+  const plugin = createCodeGraphPlugin({}, { resolveRuntime: () => runtime })
+  const plain = await mkdtemp(join(tmpdir(), "codegraph-bridge-skip-"))
+  try {
+    for (const directory of [homedir(), plain]) {
+      const hooks = await plugin({ directory, worktree: directory, client: { app: { log: async () => {} } } })
+      const config = {}
+      hooks.config(config)
+      assert.equal(config.mcp, undefined)
+      const output = { system: [] }
+      await hooks["experimental.chat.system.transform"]({}, output)
+      assert.deepEqual(output.system, [])
+    }
+  } finally {
+    await rm(plain, { recursive: true, force: true })
   }
 })
 
