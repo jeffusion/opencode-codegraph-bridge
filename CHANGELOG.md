@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/jeffusion/opencode-codegraph-bridge/compare/v0.4.2...v0.5.0) (2026-09-24)
+
+
+### Features
+
+* **plugin:** support OpenCode v1 and v2 ([85f1359](https://github.com/jeffusion/opencode-codegraph-bridge/commit/85f13591907971486eaf3e6c3248e36c9cb768e2))
+
 ## [0.4.2](https://github.com/jeffusion/opencode-codegraph-bridge/compare/v0.4.1...v0.4.2) (2026-09-18)
 
 
