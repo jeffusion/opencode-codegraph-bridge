@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/jeffusion/opencode-codegraph-bridge/compare/v0.5.0...v0.6.0) (2026-09-24)
+
+
+### Features
+
+* **plugin:** auto-update v2 plugin versions safely ([4b9245b](https://github.com/jeffusion/opencode-codegraph-bridge/commit/4b9245bc521522c2e5d39530a384e3a805c76ea3))
+
 ## [0.5.0](https://github.com/jeffusion/opencode-codegraph-bridge/compare/v0.4.2...v0.5.0) (2026-09-24)
 
 
