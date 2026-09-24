@@ -43,47 +43,66 @@ jobs:
           const { execFileSync } = require('node:child_process')
           const repo = process.env.GITHUB_REPOSITORY
           if (!/^[^/]+\/[^/]+$/.test(repo)) throw new Error(`非法仓库标识: ${repo}`)
-          const nonEmpty = (value) => value && !['0', '[]', 'null', 'undefined'].includes(value.trim())
-          let prsOutput = null
-          try { prsOutput = JSON.parse(process.env.RP_PRS || '') } catch {}
-          const prsChanged = Array.isArray(prsOutput) ? prsOutput.length > 0 : nonEmpty(process.env.RP_PRS)
-          const prsCreated = /^true$/i.test(process.env.RP_PRS_CREATED || '') || Number(process.env.RP_PRS_CREATED || 0) > 0
-          const changed = nonEmpty(process.env.RP_PR) || prsChanged || prsCreated
-          if (!changed) {
+          const parseOutput = (name) => {
+            const value = process.env[name]
+            if (!value || !value.trim() || ['null', 'undefined'].includes(value.trim())) return null
+            try { return JSON.parse(value) } catch { throw new Error(`Release Please ${name} 不是有效 JSON`) }
+          }
+          const prsCreatedOutput = process.env.RP_PRS_CREATED || ''
+          if (!['true', 'false', ''].includes(prsCreatedOutput.toLowerCase())) {
+            throw new Error(`Release Please prs_created 无效: ${prsCreatedOutput}`)
+          }
+          const prsCreated = prsCreatedOutput.toLowerCase() === 'true'
+          const prsOutput = parseOutput('RP_PRS')
+          const prOutput = parseOutput('RP_PR')
+          let candidates
+          if (prsOutput !== null) {
+            if (!Array.isArray(prsOutput)) throw new Error('Release Please prs output 必须是数组')
+            if (prsOutput.length > 0) candidates = prsOutput
+          }
+          if (!candidates && prOutput !== null) {
+            if (!prOutput || typeof prOutput !== 'object' || Array.isArray(prOutput)) {
+              throw new Error('Release Please pr output 必须是对象')
+            }
+            candidates = [prOutput]
+          }
+          if (!candidates) {
+            if (prsCreated) throw new Error('Release Please 报告创建/更新了 PR，但未提供 PR 输出')
             console.log('Release Please 未创建或更新 PR，跳过 CI dispatch。')
             process.exit(0)
           }
-          const listed = JSON.parse(execFileSync('gh', [
-            'pr', 'list', '--repo', repo, '--base', 'main', '--state', 'open',
-            '--label', 'autorelease: pending',
-            '--json', 'number,headRefName,headRefOid,author,headRepositoryOwner',
-          ], { encoding: 'utf8' }))
-          if (listed.length !== 1) {
-            console.log(`当前 main Release Please PR 数量为 ${listed.length}，跳过不安全 dispatch。`)
-            process.exit(0)
+          const numbers = new Set()
+          for (const candidate of candidates) {
+            if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate) ||
+              !Number.isInteger(candidate.number) || candidate.number <= 0) {
+              throw new Error('Release Please PR number 必须是正整数')
+            }
+            if (numbers.has(candidate.number)) throw new Error(`Release Please PR number 重复: ${candidate.number}`)
+            numbers.add(candidate.number)
+            if (typeof candidate.headBranchName !== 'string' ||
+              !candidate.headBranchName.startsWith('release-please--branches--main') ||
+              candidate.baseBranchName !== 'main') {
+              throw new Error(`Release Please PR #${candidate.number} 的 head/base 分支输出无效`)
+            }
           }
-          const candidate = listed[0]
-          if (!Number.isInteger(candidate.number)) throw new Error('Release Please PR number 无效')
-          const detail = JSON.parse(execFileSync('gh', ['api', `repos/${repo}/pulls/${candidate.number}`], { encoding: 'utf8' }))
-          const owner = repo.split('/')[0]
-          const listedOwner = typeof candidate.headRepositoryOwner === 'string'
-            ? candidate.headRepositoryOwner
-            : candidate.headRepositoryOwner?.login
-          const valid = candidate.author?.is_bot === true &&
-            listedOwner === owner &&
-            typeof candidate.headRefName === 'string' &&
-            candidate.headRefName.startsWith('release-please--branches--main') &&
-            detail.user?.login === 'github-actions[bot]' &&
-            detail.base?.ref === 'main' &&
-            detail.head?.repo?.full_name === repo &&
-            detail.head?.ref === candidate.headRefName &&
-            detail.head?.sha === candidate.headRefOid
-          if (!valid) {
-            console.log('Release Please PR 元数据未通过同仓库/机器人/main/head 校验，跳过 CI dispatch。')
-            process.exit(0)
+          for (const candidate of candidates) {
+            const detail = JSON.parse(execFileSync('gh', [
+              'api', `repos/${repo}/pulls/${candidate.number}`,
+            ], { encoding: 'utf8' }))
+            const valid = detail?.state === 'open' &&
+              detail.base?.ref === 'main' &&
+              detail.head?.ref === candidate.headBranchName &&
+              detail.head?.repo?.full_name === repo &&
+              detail.user?.login === 'github-actions[bot]' &&
+              typeof detail.head?.sha === 'string' && /^[a-f0-9]{40}$/i.test(detail.head.sha)
+            if (!valid) {
+              throw new Error(`Release Please PR #${candidate.number} 权威元数据与输出不匹配或无效`)
+            }
+            execFileSync('gh', [
+              'workflow', 'run', 'ci.yml', '--repo', repo, '--ref', detail.head.ref,
+            ], { stdio: 'inherit' })
+            console.log(`已为 Release Please PR #${candidate.number} 的 ${detail.head.ref}@${detail.head.sha} dispatch ci.yml。`)
           }
-          execFileSync('gh', ['workflow', 'run', 'ci.yml', '--repo', repo, '--ref', detail.head.ref], { stdio: 'inherit' })
-          console.log(`已为 Release Please PR #${candidate.number} 的 ${detail.head.ref}@${detail.head.sha} dispatch ci.yml。`)
           NODE
 
   publish:
