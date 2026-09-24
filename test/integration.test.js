@@ -6,12 +6,12 @@
  */
 import assert from "node:assert/strict"
 import { execFileSync } from "node:child_process"
-import { lstat, mkdir, mkdtemp, readdir, rm, symlink, writeFile } from "node:fs/promises"
+import { lstat, mkdir, mkdtemp, readdir, readlink, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createInterface } from "node:readline"
-import { spawn } from "node:child_process"
-import { pathToFileURL } from "node:url"
+import { spawn, spawnSync } from "node:child_process"
+import { fileURLToPath, pathToFileURL } from "node:url"
 import publicPlugin from "../src/server.js"
 import {
   codeGraphDataDir,
@@ -23,6 +23,27 @@ import {
 
 const REQUEST_TIMEOUT = 30_000
 const MAX_STDERR = 16 * 1024
+const MAX_DIAGNOSTIC_FILES = 100_000
+
+async function countFiles(root) {
+  let count = 0
+  const pending = [root]
+  while (pending.length && count < MAX_DIAGNOSTIC_FILES) {
+    const directory = pending.pop()
+    let entries
+    try {
+      entries = await readdir(directory, { withFileTypes: true })
+    } catch {
+      continue
+    }
+    for (const entry of entries) {
+      count += 1
+      if (entry.isDirectory()) pending.push(join(directory, entry.name))
+      if (count >= MAX_DIAGNOSTIC_FILES) break
+    }
+  }
+  return count >= MAX_DIAGNOSTIC_FILES ? `>=${MAX_DIAGNOSTIC_FILES}` : count
+}
 
 function request(connection, method, params) {
   const id = ++connection.nextId
@@ -31,10 +52,21 @@ function request(connection, method, params) {
       reject(connection.protocolError)
       return
     }
-    const timer = setTimeout(() => {
+    const timer = setTimeout(async () => {
       connection.pending.delete(id)
-      reject(new Error(`MCP ${method} 请求超时`))
+      const stderr = connection.stderr || "<空>"
+      const [fileCount, statusResult, processCwd] = await Promise.all([
+        countFiles(connection.root),
+        readStatus(connection.runtime, connection.root, 5_000).catch(() => null),
+        readlink(`/proc/${connection.process.pid}/cwd`).catch(() => "<不可用>"),
+      ])
+      const projectPath = statusResult?.status?.projectPath || "<不可用>"
+      const rootUri = connection.initializeRootUri || "<initialize 未记录>"
+      reject(new Error(
+        `MCP 请求超时：method=${method} id=${id} scenario=${connection.scenario} pid=${connection.process.pid} root=${connection.root} rootFileCount=${fileCount} parentCwd=${process.cwd()} mcpCwd=${connection.cwd} launcherProcCwd=${processCwd} initializeRootUri=${rootUri} statusProjectPath=${projectPath}\nstderr 尾部：\n${stderr}`,
+      ))
     }, REQUEST_TIMEOUT)
+    if (method === "initialize") connection.initializeRootUri = params?.rootUri
     connection.pending.set(id, { resolve, reject, timer })
     connection.process.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`)
   })
@@ -81,7 +113,16 @@ function startMcp(config, root, options = {}) {
     detached: process.platform !== "win32",
     stdio: ["pipe", "pipe", "pipe"],
   })
-  const connection = { process: child, nextId: 0, pending: new Map(), stderr: "" }
+  const connection = {
+    process: child,
+    nextId: 0,
+    pending: new Map(),
+    stderr: "",
+    root,
+    cwd: root,
+    runtime: resolveRuntime(),
+    scenario: options.scenario || "普通项目",
+  }
   const lines = createInterface({ input: child.stdout })
   lines.on("line", (line) => {
     try {
@@ -193,7 +234,7 @@ async function main() {
     assert.equal(config.mcp.codegraph.command.includes(root), false)
     assert.equal(config.mcp.codegraph.command.includes("--path"), false)
 
-    ;({ connection, lines } = startMcp(config, config.mcp.codegraph.cwd))
+    ;({ connection, lines } = startMcp(config, config.mcp.codegraph.cwd, { scenario: "普通项目" }))
     const initialize = await request(connection, "initialize", {
       protocolVersion: "2024-11-05",
       capabilities: {},
@@ -236,7 +277,7 @@ async function main() {
     execFileSync("git", ["init", "--quiet", badRoot])
     await mkdir(join(badRoot, ".codegraph"))
     await writeFile(join(badRoot, ".codegraph", "codegraph.db"), "not a sqlite database\n")
-    ;({ connection: badConnection, lines: badLines } = startMcp(config, badRoot))
+    ;({ connection: badConnection, lines: badLines } = startMcp(config, badRoot, { scenario: "worker-failure" }))
     const badInitialize = await request(badConnection, "initialize", {
       protocolVersion: "2024-11-05",
       capabilities: {},
@@ -267,6 +308,7 @@ async function main() {
     await symlink(outsideData, join(unsafeRoot, ".codegraph"), "dir")
     const outsideBefore = await readdir(outsideData)
     ;({ connection: unsafeConnection, lines: unsafeLines } = startMcp(config, unsafeRoot, {
+      scenario: "symlink",
       noDaemon: false,
       environment: {
         CODEGRAPH_DAEMON_IDLE_TIMEOUT_MS: "100",
@@ -320,7 +362,28 @@ async function main() {
   }
 }
 
-main().catch((error) => {
+async function runWithIsolatedUserConfig() {
+  const isolatedConfigHome = await mkdtemp(join(tmpdir(), "opencode-codegraph-bridge-config-"))
+  try {
+    const env = { ...process.env }
+    for (const key of Object.keys(env)) {
+      if (key.startsWith("OPENCODE_CONFIG")) delete env[key]
+    }
+    env.XDG_CONFIG_HOME = isolatedConfigHome
+    env.OPENCODE_CONFIG_CONTENT = "{}"
+    const child = spawnSync(process.execPath, [fileURLToPath(import.meta.url), "--isolated-user-config"], {
+      env,
+      stdio: "inherit",
+    })
+    if (child.error) throw child.error
+    process.exitCode = child.status ?? 1
+  } finally {
+    await rm(isolatedConfigHome, { recursive: true, force: true })
+  }
+}
+
+const isIsolatedChild = process.argv.includes("--isolated-user-config")
+;(isIsolatedChild ? main() : runWithIsolatedUserConfig()).catch((error) => {
   console.error(error)
   process.exitCode = 1
 })
