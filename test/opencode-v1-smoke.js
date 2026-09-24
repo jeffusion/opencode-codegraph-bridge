@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { execFileSync, spawn, spawnSync } from "node:child_process"
 import { createHash } from "node:crypto"
-import { mkdtemp, readdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises"
+import { lstat, mkdir, mkdtemp, readlink, readdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises"
 import { homedir, tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { createInterface } from "node:readline"
@@ -299,13 +299,19 @@ async function main() {
     server = null
     outsideRoot = await mkdtemp(join(tmpdir(), "opencode-codegraph-bridge-smoke-outside-"))
     const externalData = join(outsideRoot, "external-codegraph")
-    await rename(join(secondRoot, ".codegraph"), externalData)
+    await rename(join(secondRoot, ".codegraph"), join(outsideRoot, "previous-codegraph"))
+    await mkdir(externalData)
+    await writeFile(join(externalData, "sentinel.bin"), "external-codegraph-sentinel\n")
     await symlink(externalData, join(secondRoot, ".codegraph"), "dir")
+    const codegraphLink = join(secondRoot, ".codegraph")
+    assert.equal((await lstat(codegraphLink)).isSymbolicLink(), true, "第二阶段 .codegraph 必须是符号链接")
+    assert.equal(await readlink(codegraphLink), externalData, "第二阶段 .codegraph 必须指向新建的外部目录")
     outsideSnapshot = await directorySnapshot(externalData)
     server = startServer()
     await assertMcpConnected(firstRoot)
     await assertMcpConnected(secondRoot)
     await probeProject(command, secondEffective.mcp.codegraph.environment, secondRoot)
+    assert.deepEqual(await directorySnapshot(externalData), outsideSnapshot, "符号链接外部数据目录不得被第二阶段写入")
     console.log(`OpenCode smoke passed (${entryMode} entry): rootless CodeGraph MCP connected for two projects across restart`)
   } finally {
     try {
@@ -314,7 +320,7 @@ async function main() {
       try {
         if (hooksSnapshot) assert.deepEqual(await directorySnapshot(join(serverRoot, ".git", "hooks")), hooksSnapshot, "插件不得修改 Git hooks")
         if (globalAgentsHash !== undefined) assert.equal(await fileHash(join(homedir(), ".config", "opencode", "AGENTS.md")), globalAgentsHash, "插件不得修改全局 AGENTS.md")
-        if (outsideSnapshot) assert.deepEqual(await directorySnapshot(join(outsideRoot, "external-codegraph")), outsideSnapshot, "符号链接数据目录不得被首次初始化自动写入")
+        if (outsideSnapshot) assert.deepEqual(await directorySnapshot(join(outsideRoot, "external-codegraph")), outsideSnapshot, "符号链接外部数据目录在停止后不得被写入")
       } finally {
         await Promise.all([serverRoot, firstRoot, secondRoot].map((projectRoot) => rm(projectRoot, { recursive: true, force: true, maxRetries: 4, retryDelay: 250 })))
         if (outsideRoot) await rm(outsideRoot, { recursive: true, force: true, maxRetries: 4, retryDelay: 250 })

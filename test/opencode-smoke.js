@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { execFileSync, spawn, spawnSync } from "node:child_process"
 import { createHash } from "node:crypto"
-import { mkdtemp, readdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises"
+import { lstat, mkdir, mkdtemp, readFile, readdir, readlink, rename, rm, symlink, writeFile } from "node:fs/promises"
 import { homedir, tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { createInterface } from "node:readline"
@@ -27,11 +27,11 @@ async function fileHash(path) {
 async function directorySnapshot(path) {
   try {
     const entries = await readdir(path, { withFileTypes: true })
-    return Promise.all(entries.sort((a, b) => a.name.localeCompare(b.name)).map(async (entry) => ({
-      name: entry.name,
-      type: entry.isDirectory() ? "directory" : "file",
-      hash: entry.isDirectory() ? null : await fileHash(join(path, entry.name)),
-    })))
+    return Promise.all(entries.sort((a, b) => a.name.localeCompare(b.name)).map(async (entry) => {
+      const entryPath = join(path, entry.name)
+      if (entry.isDirectory()) return { name: entry.name, type: "directory", entries: await directorySnapshot(entryPath) }
+      return { name: entry.name, type: entry.isSymbolicLink() ? "symlink" : "file", hash: await fileHash(entryPath) }
+    }))
   } catch (error) {
     if (error?.code === "ENOENT") return []
     throw error
@@ -374,13 +374,25 @@ async function main() {
     server = null
     outsideRoot = await mkdtemp(join(tmpdir(), "opencode-codegraph-bridge-smoke-outside-"))
     const externalData = join(outsideRoot, "external-codegraph")
-    await rename(join(secondRoot, ".codegraph"), externalData)
+    const previousData = join(outsideRoot, "previous-codegraph")
+    await rename(join(secondRoot, ".codegraph"), previousData)
+    await mkdir(externalData)
+    await writeFile(join(externalData, "smoke-sentinel.txt"), "external-codegraph-sentinel\n")
     await symlink(externalData, join(secondRoot, ".codegraph"), "dir")
+    const linkedData = join(secondRoot, ".codegraph")
+    assert.equal((await lstat(linkedData)).isSymbolicLink(), true, "第二项目 .codegraph 必须是符号链接")
+    assert.equal(resolve(await readlink(linkedData)), resolve(externalData), "第二项目 .codegraph 必须指向新建的外部目录")
     outsideSnapshot = await directorySnapshot(externalData)
     server = startServer()
     await assertMcpApiContext(firstRoot)
     await assertMcpApiContext(secondRoot)
     await probeProject(command, mcpEnvironment, secondRoot)
+    assert.deepEqual(await directorySnapshot(externalData), outsideSnapshot,
+      "OpenCode 进程运行期间不得修改符号链接外部数据目录")
+    await stopServer(server)
+    server = null
+    assert.deepEqual(await directorySnapshot(externalData), outsideSnapshot,
+      "OpenCode 进程停止后符号链接外部数据目录仍不得有任何变化")
     console.log("OpenCode smoke passed: rootless CodeGraph MCP connected for two projects across restart")
   } finally {
     try {
