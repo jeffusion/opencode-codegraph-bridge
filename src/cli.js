@@ -12,7 +12,7 @@ const { name: PACKAGE_NAME, version: PACKAGE_VERSION } = require("../package.jso
 const SCHEMA = "https://opencode.ai/config.json"
 
 function usage() {
-  return "Usage: npx opencode-codegraph-bridge install\n\nRegister this package in your global OpenCode config."
+  return "Usage: npx opencode-codegraph-bridge install [--format v1|v2]\n\nRegister this package in your global OpenCode config.\nNew configs default to v1 (plugin array) for compatibility; use --format v2 for the plugins array."
 }
 
 /** @param {NodeJS.ProcessEnv} env */
@@ -41,7 +41,16 @@ function opaqueSpec(spec) {
 
 /** @param {unknown} entry */
 function disabledTuple(entry) {
+  if (entry && typeof entry === "object" && !Array.isArray(entry)) return entry.options?.enabled === false
   return Array.isArray(entry) && entry.slice(1).some((option) => option && typeof option === "object" && !Array.isArray(option) && option.enabled === false)
+}
+
+/** @param {unknown} entry */
+function entrySpec(entry) {
+  if (typeof entry === "string") return { spec: entry, format: "string" }
+  if (entry && typeof entry === "object" && !Array.isArray(entry) && typeof entry.package === "string") return { spec: entry.package, format: "object" }
+  const parsed = pluginSpec(entry)
+  return parsed ? { spec: parsed.spec, format: "legacy" } : null
 }
 
 /** @param {string} directory */
@@ -60,33 +69,53 @@ async function candidates(directory) {
     const file = await snapshot(path)
     const config = file && parseConfig(file.content)
     if (!file || !config || typeof config !== "object" || Array.isArray(config)) throw new Error(`Invalid OpenCode config: ${path}`)
-    if (config.plugin !== undefined && !Array.isArray(config.plugin)) throw new Error(`Invalid plugin array: ${path}`)
+    for (const key of ["plugins", "plugin"]) {
+      if (config[key] !== undefined && !Array.isArray(config[key])) throw new Error(`Invalid ${key} array: ${path}`)
+    }
     found.push({ name, path, file, config })
   }
   return found
 }
 
 /** @param {Awaited<ReturnType<candidates>>} files */
-function decide(files) {
+function decide(files, requestedFormat) {
   const matches = []
   let opaque = false
+  const populatedFormats = new Set()
   for (const file of files) {
-    for (const [index, entry] of (file.config.plugin || []).entries()) {
-      const parsed = pluginSpec(entry)
+    if (file.config.plugin !== undefined && file.config.plugins !== undefined) throw new Error(`Both plugin and plugins arrays are present in ${file.path}; resolve the format manually.`)
+    if (file.config.plugin?.length) populatedFormats.add("v1")
+    if (file.config.plugins?.length) populatedFormats.add("v2")
+    for (const key of ["plugins", "plugin"]) for (const [index, entry] of (file.config[key] || []).entries()) {
+      if (key === "plugin" && entry && typeof entry === "object" && !Array.isArray(entry)) {
+        throw new Error(`Object plugin entry found in the v1 plugin array in ${file.path}; manually correct it to a string or [string, options] entry.`)
+      }
+      const parsed = entrySpec(entry)
+      if (key === "plugins" && Array.isArray(entry)) throw new Error(`Tuple plugin entry found in the v2 plugins array in ${file.path}; use a string or {package, options} entry.`)
       if (!parsed) continue
       const own = ownSpec(parsed.spec)
       if (own?.unsupported) throw new Error(`Unsupported existing ${PACKAGE_NAME} spec in ${file.path}; confirm it manually.`)
-      if (own) matches.push({ file, index, entry, ...own })
+      if (own) matches.push({ file, key, index, entry, format: parsed.format, configFormat: key === "plugin" ? "v1" : "v2", ...own })
       else if (opaqueSpec(parsed.spec)) opaque = true
     }
   }
   if (matches.length > 1) throw new Error(`Multiple ${PACKAGE_NAME} entries found; resolve them manually.`)
-  if (matches.length === 1) return { type: "existing", ...matches[0] }
+  if (populatedFormats.size > 1) throw new Error("Existing plugin entries use both v1 and v2 formats; resolve the config manually before installing.")
+  if (matches.length === 1) {
+    if (requestedFormat && requestedFormat !== matches[0].configFormat) throw new Error(`Requested ${requestedFormat} format conflicts with the existing ${matches[0].configFormat} entry; no migration was performed.`)
+    return { type: "existing", ...matches[0] }
+  }
   if (opaque) throw new Error("An opaque file, git, or npm-alias plugin is present; confirm the config manually before adding this plugin.")
+  const existingFormat = populatedFormats.values().next().value
+  if (requestedFormat && existingFormat && requestedFormat !== existingFormat) throw new Error(`Requested ${requestedFormat} format conflicts with existing ${existingFormat} plugin entries; no migration was performed.`)
   const file = ["opencode.jsonc", "opencode.json", "config.json"]
     .map((name) => files.find((candidate) => candidate.name === name))
     .find(Boolean)
-  return file ? { type: "append", file } : { type: "create" }
+  const fileFormat = file?.config.plugin !== undefined ? "v1" : file?.config.plugins !== undefined ? "v2" : undefined
+  const format = existingFormat || fileFormat || requestedFormat || "v1"
+  if (fileFormat && fileFormat !== format) throw new Error(`Selected config file uses ${fileFormat} format but existing plugins use ${format}; resolve the config manually before installing.`)
+  if (requestedFormat && format !== requestedFormat) throw new Error(`Requested ${requestedFormat} format conflicts with existing ${format} plugin config; no migration was performed.`)
+  return file ? { type: "append", file, format } : { type: "create", format }
 }
 
 /** @param {{ args?: string[], env?: NodeJS.ProcessEnv, stdout?: { write: (text: string) => unknown }, stderr?: { write: (text: string) => unknown } }} options */
@@ -96,12 +125,12 @@ export async function run(options = {}) {
   const stderr = options.stderr || process.stderr
   let parsed
   try {
-    parsed = parseArgs({ args, options: { help: { type: "boolean", short: "h" }, version: { type: "boolean", short: "v" } }, allowPositionals: true, strict: false, tokens: true })
+    parsed = parseArgs({ args, options: { help: { type: "boolean", short: "h" }, version: { type: "boolean", short: "v" }, format: { type: "string" } }, allowPositionals: true, strict: false, tokens: true })
   } catch {
     stderr.write(`${usage()}\n`)
     return 1
   }
-  if (parsed.tokens.some((token) => token.kind === "option" && !["help", "version"].includes(token.name)) ||
+  if (parsed.tokens.some((token) => token.kind === "option" && !["help", "version", "format"].includes(token.name)) ||
     parsed.positionals.some((value) => value !== "install") || parsed.positionals.length > 1) {
     stderr.write(`${usage()}\n`)
     return 1
@@ -118,30 +147,38 @@ export async function run(options = {}) {
     stderr.write(`${usage()}\n`)
     return 1
   }
+  const requestedFormat = parsed.values.format
+  if (requestedFormat !== undefined && requestedFormat !== "v1" && requestedFormat !== "v2") {
+    stderr.write("--format must be v1 or v2.\n")
+    return 1
+  }
   try {
     const directory = await ensureSafeDirectory(configDirectory(options.env || process.env))
     if (!directory) throw new Error("OpenCode config directory is unsafe.")
     const result = await withConfigLock(directory, async () => {
       const files = await candidates(directory)
-      const plan = decide(files)
+      const plan = decide(files, requestedFormat)
       const spec = `${PACKAGE_NAME}@${PACKAGE_VERSION}`
       if (plan.type === "existing") {
-        const existingSpec = pluginSpec(plan.entry).spec
+        const existingSpec = entrySpec(plan.entry).spec
         if (plan.pinned && compareVersions(plan.pinned, PACKAGE_VERSION) >= 0) return { path: plan.file.path, spec: existingSpec, disabled: disabledTuple(plan.entry), changed: false }
-        const path = Array.isArray(plan.entry) ? ["plugin", plan.index, 0] : ["plugin", plan.index]
+        const path = plan.format === "object" ? [plan.key, plan.index, "package"]
+          : Array.isArray(plan.entry) ? [plan.key, plan.index, 0] : [plan.key, plan.index]
         const changed = replaceConfigValue(plan.file.file.content, path, spec)
         if (!changed) throw new Error(`Could not update config: ${plan.file.path}`)
         if (!await writeExisting(plan.file.path, plan.file.file, changed)) throw new Error(`Config changed while installing: ${plan.file.path}`)
         return { path: plan.file.path, spec, disabled: disabledTuple(plan.entry), changed: true }
       }
       if (plan.type === "append") {
-        const plugin = plan.file.config.plugin
-        const changed = replaceConfigValue(plan.file.file.content, plugin ? ["plugin", -1] : ["plugin"], plugin ? spec : [spec])
+        const key = plan.format === "v1" ? "plugin" : "plugins"
+        const plugins = plan.file.config[key]
+        const changed = replaceConfigValue(plan.file.file.content, plugins ? [key, -1] : [key], plugins ? spec : [spec])
         if (!changed || !await writeExisting(plan.file.path, plan.file.file, changed)) throw new Error(`Config changed while installing: ${plan.file.path}`)
         return { path: plan.file.path, spec, disabled: false, changed: true }
       }
       const path = join(directory, "opencode.json")
-      if (!await writeNew(path, `${JSON.stringify({ $schema: SCHEMA, plugin: [spec] }, null, 2)}\n`)) throw new Error(`Could not create config: ${path}`)
+      const key = plan.format === "v1" ? "plugin" : "plugins"
+      if (!await writeNew(path, `${JSON.stringify({ $schema: SCHEMA, [key]: [spec] }, null, 2)}\n`)) throw new Error(`Could not create config: ${path}`)
       return { path, spec, disabled: false, changed: true }
     })
     if (!result) throw new Error("OpenCode config is busy; try again after the other process finishes.")

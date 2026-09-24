@@ -16,30 +16,31 @@
     "registry": "https://registry.npmjs.org"
   },
   "type": "module",
-  "main": "src/index.js",
+  "main": "index.js",
   "bin": {
     "opencode-codegraph-bridge": "src/cli.js"
   },
   "exports": {
-    ".": "./src/index.js"
+    ".": "./index.js",
+    "./server": "./server.js"
   },
   "files": [
+    "index.js",
+    "server.js",
     "src",
     "README.md",
     "README.zh-CN.md",
     "LICENSE"
   ],
   "scripts": {
-    "test:unit": "node --test test/unit.test.js test/update.test.js test/install.test.js",
+    "test:unit": "node --test test/unit.test.js test/update.test.js test/dual-entry.test.js test/install.test.js",
     "test:install": "node --test test/install.test.js",
     "test:integration": "node test/integration.test.js",
     "test:opencode": "node test/opencode-smoke.js"
   },
   "dependencies": {
     "@colbymchenry/codegraph": "^1.6.0",
+    "@opencode/plugin": "2.0.15",
     "jsonc-parser": "^3.3.1"
-  },
-  "devDependencies": {
-    "@opencode-ai/plugin": "1.16.2"
   }
 }

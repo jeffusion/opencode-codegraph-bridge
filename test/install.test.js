@@ -35,7 +35,7 @@ async function install(root, args = ["install"]) {
   return { code, ...stream.text() }
 }
 
-test("空目录创建标准配置，重复执行零写入", async () => {
+test("空目录默认创建 v1 配置，重复执行零写入", async () => {
   await tempRoot(async (root) => {
     const first = await install(root)
     const file = join(root, "xdg", "opencode", "opencode.json")
@@ -52,12 +52,12 @@ test("空目录创建标准配置，重复执行零写入", async () => {
   })
 })
 
-test("JSONC tuple 仅替换 spec 并保留 disabled、注释、CRLF 和参数", async () => {
+test("JSONC 对象仅替换 package 并保留 disabled、注释、CRLF 和参数", async () => {
   await tempRoot(async (root) => {
     const directory = join(root, "xdg", "opencode")
     await mkdir(directory, { recursive: true })
     const file = join(directory, "opencode.jsonc")
-    const original = `{"plugin": [["${name}@0.0.1", { "enabled": false, "keep": true }]],\r\n// retained\r\n"x": 1}\r\n`
+    const original = `{"plugins": [{ "package": "${name}@0.0.1", "options": { "enabled": false, "keep": true } }],\r\n// retained\r\n"x": 1}\r\n`
     await writeFile(file, original)
     const result = await install(root)
     const changed = await readFile(file, "utf8")
@@ -65,8 +65,89 @@ test("JSONC tuple 仅替换 spec 并保留 disabled、注释、CRLF 和参数", 
     assert.match(result.out, /remains disabled/)
     assert.match(changed, /\r\n/)
     assert.match(changed, /retained/)
-    assert.deepEqual(parse(changed).plugin, [[`${name}@${version}`, { enabled: false, keep: true }]])
+    assert.deepEqual(parse(changed).plugins, [{ package: `${name}@${version}`, options: { enabled: false, keep: true } }])
   })
+})
+
+test("legacy v1 plugin 字符串和 tuple 原位更新并保留 options", async () => {
+  await tempRoot(async (root) => {
+    const directory = join(root, "xdg", "opencode")
+    await mkdir(directory, { recursive: true })
+    const file = join(directory, "opencode.json")
+    await writeFile(file, JSON.stringify({ plugin: ["other-plugin", [`${name}@0.0.1`, { enabled: false, keep: true }]] }))
+    const result = await install(root)
+    assert.equal(result.code, 0)
+    assert.match(result.out, /remains disabled/)
+    assert.deepEqual(JSON.parse(await readFile(file, "utf8")).plugin, ["other-plugin", [`${name}@${version}`, { enabled: false, keep: true }]])
+  })
+  await tempRoot(async (root) => {
+    const directory = join(root, "xdg", "opencode")
+    await mkdir(directory, { recursive: true })
+    const file = join(directory, "opencode.json")
+    await writeFile(file, JSON.stringify({ plugin: ["another-plugin"] }))
+    assert.equal((await install(root)).code, 0)
+    assert.deepEqual(JSON.parse(await readFile(file, "utf8")).plugin, ["another-plugin", `${name}@${version}`])
+  })
+})
+
+test("v1 plugin 对象条目一律拒绝且不写入", async () => {
+  for (const entry of [
+    { package: `${name}@0.0.1`, options: { enabled: false } },
+    { package: `${name}@${version}`, options: { enabled: false } },
+    { package: `${name}@999.0.0`, options: { enabled: false } },
+    { package: "other-plugin", options: { enabled: false } },
+  ]) {
+    await tempRoot(async (root) => {
+      const directory = join(root, "xdg", "opencode")
+      await mkdir(directory, { recursive: true })
+      const file = join(directory, "opencode.json")
+      const original = JSON.stringify({ plugin: [entry] })
+      await writeFile(file, original)
+      const result = await install(root)
+      assert.equal(result.code, 1)
+      assert.match(result.err, /manually correct.*string or \[string, options\]/i)
+      assert.equal(await readFile(file, "utf8"), original)
+    })
+  }
+})
+
+test("v2 显式创建 plugins 字符串，已有格式优先且显式冲突拒绝", async () => {
+  await tempRoot(async (root) => {
+    assert.equal((await install(root, ["install", "--format", "v2"])).code, 0)
+    assert.deepEqual(JSON.parse(await readFile(join(root, "xdg", "opencode", "opencode.json"), "utf8")).plugins, [`${name}@${version}`])
+  })
+  for (const [existing, format] of [[{ plugin: [`${name}@0.0.1`] }, "v2"], [{ plugins: [`${name}@0.0.1`] }, "v1"], [{ plugin: ["other"] }, "v2"], [{ plugins: ["other"] }, "v1"]]) {
+    await tempRoot(async (root) => {
+      const directory = join(root, "xdg", "opencode")
+      await mkdir(directory, { recursive: true })
+      const file = join(directory, "opencode.json")
+      const original = JSON.stringify(existing)
+      await writeFile(file, original)
+      const result = await install(root, ["install", "--format", format])
+      assert.equal(result.code, 1)
+      assert.match(result.err, /conflicts with/i)
+      assert.equal(await readFile(file, "utf8"), original)
+    })
+  }
+})
+
+test("双字段、多个自身条目及跨版本混合插件拒绝", async () => {
+  for (const config of [
+    { plugin: [], plugins: [] },
+    { plugin: [`${name}@0.0.1`], plugins: [`${name}@0.0.1`] },
+    { plugin: ["other"], plugins: ["also-other"] },
+    { plugin: [`${name}@0.0.1`, `${name}@0.0.2`] },
+  ]) {
+    await tempRoot(async (root) => {
+      const directory = join(root, "xdg", "opencode")
+      await mkdir(directory, { recursive: true })
+      const file = join(directory, "opencode.json")
+      const original = JSON.stringify(config)
+      await writeFile(file, original)
+      assert.equal((await install(root)).code, 1)
+      assert.equal(await readFile(file, "utf8"), original)
+    })
+  }
 })
 
 test("已有条目优先其所在文件；无条目按 jsonc、json、legacy 追加", async () => {
@@ -75,20 +156,20 @@ test("已有条目优先其所在文件；无条目按 jsonc、json、legacy 追
     await mkdir(directory, { recursive: true })
     const legacy = join(directory, "config.json")
     const jsonc = join(directory, "opencode.jsonc")
-    await writeFile(legacy, JSON.stringify({ plugin: [`${name}@0.0.1`] }))
-    await writeFile(jsonc, JSON.stringify({ plugin: ["other"] }))
+    await writeFile(legacy, JSON.stringify({ plugins: [`${name}@0.0.1`] }))
+    await writeFile(jsonc, JSON.stringify({ plugins: ["other"] }))
     assert.equal((await install(root)).code, 0)
-    assert.deepEqual(JSON.parse(await readFile(legacy, "utf8")).plugin, [`${name}@${version}`])
-    assert.deepEqual(JSON.parse(await readFile(jsonc, "utf8")).plugin, ["other"])
+    assert.deepEqual(JSON.parse(await readFile(legacy, "utf8")).plugins, [`${name}@${version}`])
+    assert.deepEqual(JSON.parse(await readFile(jsonc, "utf8")).plugins, ["other"])
   })
   await tempRoot(async (root) => {
     const directory = join(root, "xdg", "opencode")
     await mkdir(directory, { recursive: true })
-    await writeFile(join(directory, "config.json"), JSON.stringify({ plugin: ["legacy"] }))
-    await writeFile(join(directory, "opencode.json"), JSON.stringify({ plugin: ["json"] }))
-    await writeFile(join(directory, "opencode.jsonc"), "{ // comment\n \"plugin\": [\"jsonc\"] }")
+    await writeFile(join(directory, "config.json"), JSON.stringify({ plugins: ["legacy"] }))
+    await writeFile(join(directory, "opencode.json"), JSON.stringify({ plugins: ["json"] }))
+    await writeFile(join(directory, "opencode.jsonc"), "{ // comment\n \"plugins\": [\"jsonc\"] }")
     assert.equal((await install(root)).code, 0)
-    assert.deepEqual(parse(await readFile(join(directory, "opencode.jsonc"), "utf8")).plugin, ["jsonc", `${name}@${version}`])
+    assert.deepEqual(parse(await readFile(join(directory, "opencode.jsonc"), "utf8")).plugins, ["jsonc", `${name}@${version}`])
   })
 })
 
@@ -97,12 +178,12 @@ test("追加 plugin 只插入新元素，保留数组中的注释和不规则空
     const directory = join(root, "xdg", "opencode")
     await mkdir(directory, { recursive: true })
     const file = join(directory, "opencode.jsonc")
-    await writeFile(file, `{"plugin":[ "one" , // keep\n["two",false] ],"x":1}`)
+    await writeFile(file, `{"plugins":[ "one" , // keep\n"two" ],"x":1}`)
     assert.equal((await install(root)).code, 0)
     const changed = await readFile(file, "utf8")
     assert.match(changed, /\[ "one" , \/\/ keep/)
-    assert.match(changed, /\["two",false\]/)
-    assert.deepEqual(parse(changed).plugin, ["one", ["two", false], `${name}@${version}`])
+    assert.match(changed, /"two"/)
+    assert.deepEqual(parse(changed).plugins, ["one", "two", `${name}@${version}`])
   })
   await tempRoot(async (root) => {
     const directory = join(root, "xdg", "opencode")
@@ -120,7 +201,7 @@ test("重复、unsupported、较高 pin 和不透明插件安全处理", async (
       const directory = join(root, "xdg", "opencode")
       await mkdir(directory, { recursive: true })
       const file = join(directory, "opencode.json")
-      const original = JSON.stringify({ plugin })
+      const original = JSON.stringify({ plugins: plugin })
       await writeFile(file, original)
       const result = await install(root)
       assert.equal(result.code, 1)
@@ -131,7 +212,7 @@ test("重复、unsupported、较高 pin 和不透明插件安全处理", async (
     const directory = join(root, "xdg", "opencode")
     await mkdir(directory, { recursive: true })
     const file = join(directory, "opencode.json")
-    const original = JSON.stringify({ plugin: [`${name}@999.0.0`] })
+    const original = JSON.stringify({ plugins: [`${name}@999.0.0`] })
     await writeFile(file, original)
     const result = await install(root)
     assert.equal(result.code, 0)
@@ -142,10 +223,26 @@ test("重复、unsupported、较高 pin 和不透明插件安全处理", async (
     const directory = join(root, "xdg", "opencode")
     await mkdir(directory, { recursive: true })
     const file = join(directory, "opencode.json")
-    await writeFile(file, JSON.stringify({ plugin: [name, "./other-plugin.js"] }))
+    await writeFile(file, JSON.stringify({ plugins: [name, "./other-plugin.js"] }))
     assert.equal((await install(root)).code, 0)
-    assert.deepEqual(JSON.parse(await readFile(file, "utf8")).plugin, [`${name}@${version}`, "./other-plugin.js"])
+    assert.deepEqual(JSON.parse(await readFile(file, "utf8")).plugins, [`${name}@${version}`, "./other-plugin.js"])
   })
+})
+
+test("plugins 中本包 tuple（包括较高版本）及其它 tuple 都拒绝且不写入", async () => {
+  for (const entry of [[name], [`${name}@999.0.0`], ["other-plugin", { enabled: false }]]) {
+    await tempRoot(async (root) => {
+      const directory = join(root, "xdg", "opencode")
+      await mkdir(directory, { recursive: true })
+      const file = join(directory, "opencode.json")
+      const original = JSON.stringify({ plugins: [entry] })
+      await writeFile(file, original)
+      const result = await install(root)
+      assert.equal(result.code, 1)
+      assert.match(result.err, /tuple.*v2 plugins.*string or \{package, options\}/i)
+      assert.equal(await readFile(file, "utf8"), original)
+    })
+  }
 })
 
 test("symlink CLI 子进程会执行真实模块", async () => {
@@ -193,12 +290,12 @@ test("help、version、未知参数和安全失败不写入", async () => {
     const file = join(directory, "opencode.json")
     await writeFile(file, "{")
     assert.equal((await install(root)).code, 1)
-    await writeFile(file, JSON.stringify({ plugin: [] }))
+    await writeFile(file, JSON.stringify({ plugins: [] }))
     await chmod(file, 0o444)
     assert.equal((await install(root)).code, 1)
     await chmod(file, 0o644)
     const target = join(directory, "target.json")
-    await writeFile(target, JSON.stringify({ plugin: [] }))
+    await writeFile(target, JSON.stringify({ plugins: [] }))
     await rm(file)
     await symlink(target, file)
     assert.equal((await install(root)).code, 1)

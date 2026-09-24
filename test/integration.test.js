@@ -12,7 +12,7 @@ import { join } from "node:path"
 import { createInterface } from "node:readline"
 import { spawn } from "node:child_process"
 import { pathToFileURL } from "node:url"
-import publicPlugin from "../src/index.js"
+import publicPlugin from "../src/server.js"
 import {
   codeGraphDataDir,
   isReadyStatus,
@@ -166,15 +166,23 @@ async function main() {
     const firstValue = "CG_BRIDGE_SOURCE_BEFORE_9F2A"
     await writeFile(join(root, "sample.js"), `export function ${firstSymbol}() { return "${firstValue}" }\n`)
 
-    const hooks = await publicPlugin({
-      directory: root,
-      worktree: root,
-      client: { app: { log: async () => {} } },
-    })
-    const config = {}
-    hooks.config(config)
+    const servers = new Map()
+    const ctx = {
+      location: { directory: root },
+      options: {},
+      mcp: {
+        transform: async (transform) => transform({
+          get: (name) => servers.get(name),
+          set: (name, value) => servers.set(name, value),
+        }),
+      },
+      session: { hook: async () => {} },
+    }
+    await publicPlugin.setup(ctx)
+    const config = { mcp: { codegraph: servers.get("codegraph") } }
     assert.equal(config.mcp.codegraph.type, "local")
-    assert.equal(config.mcp.codegraph.enabled, true)
+    assert.equal(config.mcp.codegraph.disabled, false)
+    assert.equal(config.mcp.codegraph.cwd, root)
     const runtime = resolveRuntime()
     assert.deepEqual(config.mcp.codegraph.command, [
       runtime.nodePath,
@@ -185,7 +193,7 @@ async function main() {
     assert.equal(config.mcp.codegraph.command.includes(root), false)
     assert.equal(config.mcp.codegraph.command.includes("--path"), false)
 
-    ;({ connection, lines } = startMcp(config, root))
+    ;({ connection, lines } = startMcp(config, config.mcp.codegraph.cwd))
     const initialize = await request(connection, "initialize", {
       protocolVersion: "2024-11-05",
       capabilities: {},
