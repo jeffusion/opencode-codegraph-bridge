@@ -6,7 +6,7 @@ import { homedir, tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { createInterface } from "node:readline"
 import { fileURLToPath, pathToFileURL } from "node:url"
-import { mcpConfig, readStatus, resolveRuntime } from "../src/internal.js"
+import { readStatus, resolveRuntime } from "../src/internal.js"
 
 const sourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 const REQUEST_TIMEOUT_MS = 5_000
@@ -38,75 +38,24 @@ async function directorySnapshot(path) {
   }
 }
 
-function safeDiagnostic(value, server) {
-  let text = typeof value === "string" ? value : JSON.stringify(value)
-  for (const secret of [server.password, server.authorization]) {
-    if (secret) text = text.replaceAll(secret, "[REDACTED]")
-  }
-  return text
-}
-
-function apiHeaders(root, server) {
-  return {
-    authorization: server.authorization,
-    "x-opencode-directory": encodeURIComponent(root),
-  }
-}
-
-async function getApiJson(port, route, root, server) {
-  const response = await fetch(`http://127.0.0.1:${port}${route}`, {
-    headers: apiHeaders(root, server),
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-  })
-  if (response.status === 401) throw new Error("OpenCode v2 API 认证失败")
-  if (!response.ok) throw new Error(`GET ${route} 返回 HTTP ${response.status}`)
-  return response.json()
-}
-
-async function waitForMcpApi(port, root, server, pluginPath) {
+async function waitForMcp(port, root, server) {
+  const url = `http://127.0.0.1:${port}/mcp?directory=${encodeURIComponent(root)}`
   const deadline = Date.now() + 60_000
   let lastError = ""
-  let pluginDiagnostic = "尚未读取 GET /api/plugin"
   while (Date.now() < deadline) {
     try {
-      const plugins = await getApiJson(port, "/api/plugin", root, server)
-      assert.ok(Array.isArray(plugins.data), `GET /api/plugin 必须返回 data 数组：${safeDiagnostic(plugins, server)}`)
-      assert.equal(resolve(plugins.location?.directory || ""), resolve(root),
-        `GET /api/plugin 未采用 x-opencode-directory：${safeDiagnostic(plugins.location, server)}`)
-      const targetPlugin = plugins.data.find((entry) => entry.id === "opencode-codegraph-bridge"
-        || entry.source?.path && resolve(entry.source.path) === resolve(pluginPath)
-        || entry.source?.target && resolve(entry.source.target) === resolve(pluginPath))
-      pluginDiagnostic = targetPlugin
-        ? safeDiagnostic({ source: targetPlugin.source, features: targetPlugin.features, state: targetPlugin.state }, server)
-        : safeDiagnostic({ target: "opencode-codegraph-bridge", loaded: false, plugins: plugins.data.map(({ id, source, features, state }) => ({ id, source, features, state })) }, server)
-      if (targetPlugin?.state?.status === "failed") {
-        throw new Error(`CODEGRAPH_PLUGIN_FAILED: ${pluginDiagnostic}`)
-      }
-      const mcp = await getApiJson(port, "/api/mcp", root, server)
-      assert.ok(Array.isArray(mcp.data), `GET /api/mcp 必须返回 data 数组：${safeDiagnostic(mcp, server)}`)
-      assert.equal(resolve(mcp.location?.directory || ""), resolve(root),
-        `GET /api/mcp 未采用 x-opencode-directory：${safeDiagnostic(mcp.location, server)}`)
-      const codegraph = mcp.data.find((entry) => entry.name === "codegraph")
-      if (codegraph?.status?.status === "connected" && targetPlugin?.state?.status === "active"
-        && targetPlugin.features?.server === true) return { mcp, plugin: targetPlugin }
-      if (codegraph?.status?.status === "failed") {
-        throw new Error(`CODEGRAPH_MCP_FAILED: ${safeDiagnostic(codegraph, server)}; plugin=${pluginDiagnostic}`)
-      }
-      lastError = codegraph
-        ? `codegraph MCP 状态为 ${codegraph.status?.status || "未知"}：${safeDiagnostic(codegraph, server)}`
-        : `尚未注册 codegraph MCP；当前服务器：${safeDiagnostic(mcp.data, server)}`
-      if (targetPlugin && (targetPlugin.state?.status !== "active" || targetPlugin.features?.server !== true)) {
-        lastError += `；插件未处于可用 server 状态：${pluginDiagnostic}`
-      }
+      const response = await fetch(url, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) })
+      if (response.status === 401) throw new Error("OpenCode server 返回 401；隔离测试不应继承 server auth")
+      if (response.ok) return await response.json()
+      lastError = `HTTP ${response.status}`
     } catch (error) {
-      if (error.message?.includes("认证失败")) throw error
-      if (error.message?.startsWith("CODEGRAPH_MCP_FAILED:") || error.message?.startsWith("CODEGRAPH_PLUGIN_FAILED:")) throw error
-      lastError = safeDiagnostic(error.message, server)
+      if (error.message?.includes("401")) throw error
+      lastError = error.message
     }
     if (server.exitCode !== null) break
     await new Promise((resolve) => setTimeout(resolve, 500))
   }
-  throw new Error(`OpenCode codegraph MCP 未连接：${lastError}；目标插件 source/features/state：${pluginDiagnostic}；stdout：${safeDiagnostic(server.stdout, server)}；stderr：${safeDiagnostic(server.stderr, server)}`)
+  throw new Error(`OpenCode /mcp 未就绪：${lastError}；stderr：${server.stderr}`)
 }
 
 async function stopServer(server) {
@@ -246,6 +195,9 @@ async function probeProject(command, environment, root, symbol, otherSymbol) {
 }
 
 async function main() {
+  const entryMode = process.env.OPENCODE_V1_ENTRY || "legacy"
+  assert.ok(entryMode === "legacy" || entryMode === "server", `无效的 OPENCODE_V1_ENTRY：${entryMode}`)
+
   const probe = spawnSync(process.env.OPENCODE_BIN || "opencode", ["--version"], { encoding: "utf8" })
   if (probe.error || probe.status !== 0) {
     console.log(`SKIP: opencode 不可用${probe.error ? `（${probe.error.message}）` : `（退出码 ${probe.status}）`}`)
@@ -267,12 +219,13 @@ async function main() {
     hooksSnapshot = await directorySnapshot(join(serverRoot, ".git", "hooks"))
     globalAgentsHash = await fileHash(join(homedir(), ".config", "opencode", "AGENTS.md"))
     const configPath = join(serverRoot, "isolated-opencode.json")
-    const pluginPath = sourceRoot
-    const plugin = { package: pluginPath }
-    await writeFile(configPath, `${JSON.stringify({ plugins: [plugin] }, null, 2)}\n`)
+    const entryPath = entryMode === "server"
+      ? join(sourceRoot, "server.js")
+      : join(sourceRoot, "src", "index.js")
+    const pluginUrl = pathToFileURL(entryPath).href
+    await writeFile(configPath, `${JSON.stringify({ plugin: [pluginUrl] }, null, 2)}\n`)
     const config = JSON.parse(await readFile(configPath, "utf8"))
-    assert.deepEqual(config, { plugins: [plugin] })
-    assert.equal(config.plugin, undefined, "smoke 配置必须使用 v2 plugins")
+    assert.deepEqual(config, { plugin: [pluginUrl] })
     assert.equal(config.mcp, undefined, "smoke 配置不得静态声明 MCP")
 
     const port = 41000 + (process.pid % 1000)
@@ -291,12 +244,12 @@ async function main() {
     for (const key of Object.keys(environment).filter((key) => key.startsWith("OPENCODE_CONFIG"))) {
       delete environment[key]
     }
-    environment.OPENCODE_SERVER_USERNAME = "opencode"
-    environment.OPENCODE_SERVER_PASSWORD = `isolated-smoke-${process.pid}`
+    delete environment.OPENCODE_SERVER_PASSWORD
+    delete environment.OPENCODE_SERVER_USERNAME
     environment.OPENCODE_CONFIG = configPath
     const startServer = () => {
       const child = spawn(process.env.OPENCODE_BIN || "opencode", [
-        "serve", "--hostname", "127.0.0.1", "--port", String(port), "--log-level", "debug", "--print-logs",
+        "serve", "--hostname", "127.0.0.1", "--port", String(port),
       ], {
         cwd: serverRoot,
         env: environment,
@@ -304,71 +257,43 @@ async function main() {
         detached: process.platform !== "win32",
         stdio: ["ignore", "pipe", "pipe"],
       })
-      const nextServer = {
-        process: child,
-        stderr: "",
-        stdout: "",
-        authorization: `Basic ${Buffer.from(`${environment.OPENCODE_SERVER_USERNAME}:${environment.OPENCODE_SERVER_PASSWORD}`).toString("base64")}`,
-        exitCode: null,
-      }
-      child.stdout.on("data", (chunk) => { nextServer.stdout = tail(nextServer.stdout, chunk) })
+      const nextServer = { process: child, stderr: "", exitCode: null }
+      child.stdout.on("data", () => {})
       child.stderr.on("data", (chunk) => { nextServer.stderr = tail(nextServer.stderr, chunk) })
       child.once("exit", (code) => { nextServer.exitCode = code })
       return nextServer
     }
-    const assertMcpApiContext = async (projectRoot) => {
-      const connected = await waitForMcpApi(port, projectRoot, server, pluginPath)
-      assert.equal(connected.plugin.id, "opencode-codegraph-bridge")
-      assert.equal(typeof connected.plugin.source?.type, "string", "插件响应必须包含 source")
-      assert.equal(resolve(connected.plugin.source.path), resolve(join(pluginPath, "server.js")),
-        "宿主必须加载真实仓库插件目录的根 server.js")
-      assert.equal(connected.plugin.state.status, "active")
-      assert.equal(connected.plugin.features.server, true)
-      console.log(`OpenCode plugin ${projectRoot}: ${safeDiagnostic({
-        source: connected.plugin.source,
-        features: connected.plugin.features,
-        state: connected.plugin.state,
-      }, server)}`)
-      return connected
+    const assertMcpConnected = async (projectRoot) => {
+      const status = await waitForMcp(port, projectRoot, server)
+      assert.equal(status.codegraph?.status, "connected", `CodeGraph 未连接：${JSON.stringify(status)}`)
+      assert.equal(Object.keys(status).filter((name) => name === "codegraph").length, 1)
+      return status
     }
 
     server = startServer()
-    await assertMcpApiContext(firstRoot)
-    await assertMcpApiContext(secondRoot)
-    const configResponses = await Promise.all([firstRoot, secondRoot].map((projectRoot) =>
-      fetch(`http://127.0.0.1:${port}/api/config`, {
-        headers: {
-          authorization: server.authorization,
-          "x-opencode-directory": encodeURIComponent(projectRoot),
-        },
-      })))
-    for (const configResponse of configResponses) {
-      assert.equal(configResponse.status, 200, `OpenCode GET /api/config 失败：HTTP ${configResponse.status}`)
+    await assertMcpConnected(firstRoot)
+    await assertMcpConnected(secondRoot)
+    const effectiveResponses = await Promise.all([firstRoot, secondRoot].map((projectRoot) =>
+      fetch(`http://127.0.0.1:${port}/config?directory=${encodeURIComponent(projectRoot)}`)))
+    for (const effectiveResponse of effectiveResponses) {
+      if (effectiveResponse.status === 401) throw new Error("OpenCode server 返回 401；未成功隔离 server auth")
+      assert.equal(effectiveResponse.ok, true, `OpenCode /config 失败：HTTP ${effectiveResponse.status}`)
     }
-    const [firstConfigEntries, secondConfigEntries] = await Promise.all(configResponses.map((response) => response.json()))
-    for (const configEntries of [firstConfigEntries, secondConfigEntries]) {
-      assert.ok(Array.isArray(configEntries), `GET /api/config 必须返回 Config.Entry[]：${JSON.stringify(configEntries)}`)
-      const testConfig = configEntries.find((entry) => entry.type === "document" && resolve(entry.path) === resolve(configPath))
-      assert.ok(testConfig, `GET /api/config 未列出隔离测试配置：${JSON.stringify(configEntries)}`)
-      assert.deepEqual(testConfig.info?.plugins, [plugin], "隔离配置 document 必须使用 v2 plugins")
-      assert.equal(testConfig.info?.plugin, undefined, "隔离配置 document 不得使用旧版 plugin 字段")
+    const [firstEffective, secondEffective] = await Promise.all(effectiveResponses.map((response) => response.json()))
+    for (const effective of [firstEffective, secondEffective]) {
+      assert.deepEqual(effective.plugin, [pluginUrl], "effective config 必须只包含本测试 file URL 插件")
+      assert.deepEqual(Object.keys(effective.mcp || {}), ["codegraph"], "effective config 的 MCP 必须只有动态 CodeGraph")
+      assert.equal(effective.mcp.codegraph.enabled, true)
     }
-    const runtime = resolveRuntime()
-    const firstMcpConfig = mcpConfig(runtime, firstRoot)
-    const secondMcpConfig = mcpConfig(runtime, secondRoot)
-    const command = firstMcpConfig.command
-    const mcpEnvironment = firstMcpConfig.environment
-    assert.equal(firstMcpConfig.cwd, firstRoot)
-    assert.equal(secondMcpConfig.cwd, secondRoot)
-    assert.deepEqual(command, secondMcpConfig.command)
-    assert.deepEqual(mcpEnvironment, secondMcpConfig.environment)
+    assert.deepEqual(firstEffective.mcp.codegraph.command, secondEffective.mcp.codegraph.command, "两个目录必须使用相同 rootless command")
+    const command = firstEffective.mcp.codegraph.command
     assert.equal(command.includes("--path"), false)
     assert.equal(command.includes("serve"), false)
     assert.equal(command.includes("--mcp"), false)
     assert.equal(command.includes(firstRoot), false)
     assert.equal(command.includes(secondRoot), false)
-    await probeProject(command, mcpEnvironment, firstRoot, "OpenCodeSmokeFirstUniqueSymbol", "OpenCodeSmokeSecondUniqueSymbol")
-    await probeProject(command, mcpEnvironment, secondRoot, "OpenCodeSmokeSecondUniqueSymbol", "OpenCodeSmokeFirstUniqueSymbol")
+    await probeProject(command, firstEffective.mcp.codegraph.environment, firstRoot, "OpenCodeSmokeFirstUniqueSymbol", "OpenCodeSmokeSecondUniqueSymbol")
+    await probeProject(command, secondEffective.mcp.codegraph.environment, secondRoot, "OpenCodeSmokeSecondUniqueSymbol", "OpenCodeSmokeFirstUniqueSymbol")
 
     await stopServer(server)
     server = null
@@ -378,10 +303,10 @@ async function main() {
     await symlink(externalData, join(secondRoot, ".codegraph"), "dir")
     outsideSnapshot = await directorySnapshot(externalData)
     server = startServer()
-    await assertMcpApiContext(firstRoot)
-    await assertMcpApiContext(secondRoot)
-    await probeProject(command, mcpEnvironment, secondRoot)
-    console.log("OpenCode smoke passed: rootless CodeGraph MCP connected for two projects across restart")
+    await assertMcpConnected(firstRoot)
+    await assertMcpConnected(secondRoot)
+    await probeProject(command, secondEffective.mcp.codegraph.environment, secondRoot)
+    console.log(`OpenCode smoke passed (${entryMode} entry): rootless CodeGraph MCP connected for two projects across restart`)
   } finally {
     try {
       if (server) await stopServer(server)

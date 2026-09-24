@@ -4,7 +4,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "n
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { parse } from "jsonc-parser"
-import { createCodeGraphPlugin, mcpConfig } from "../src/internal.js"
+import legacy from "../src/legacy.js"
 import { createVersionUpdater, PACKAGE_NAME, REGISTRY_URL } from "../src/update.js"
 
 // Keep updater tests independent from the repository package version.
@@ -292,11 +292,11 @@ test("config 启动 updater 不阻塞，nongit 也更新；disabled 完全跳过
       callbacks.onSuccess(TEST_LATEST_VERSION)
       await pending
     }
-    const hooks = await createCodeGraphPlugin({}, { updatePluginVersion })({
+    const hooks = await legacy({
       directory: root,
       worktree: root,
       client: { app: { log: async ({ body }) => logs.push(body.message) } },
-    })
+    }, {}, { updatePluginVersion, resolveRuntime: () => { throw new Error("unused") } })
     assert.equal(hooks.config({}), undefined)
     await Promise.resolve()
     assert.equal(calls, 1)
@@ -304,9 +304,9 @@ test("config 启动 updater 不阻塞，nongit 也更新；disabled 完全跳过
     release()
 
     let disabledCalls = 0
-    const disabled = await createCodeGraphPlugin({ enabled: false }, {
+    const disabled = await legacy({ directory: root, worktree: root, client: { app: { log: async () => {} } } }, { enabled: false }, {
       updatePluginVersion: async () => { disabledCalls += 1 },
-    })({ directory: root, worktree: root, client: { app: { log: async () => {} } } })
+    })
     disabled.config({})
     await Promise.resolve()
     assert.equal(disabledCalls, 0)
@@ -319,11 +319,9 @@ test("更新通知使用原生英文参数，每个插件实例只通知一次",
     const callbacks = []
     const logs = []
     const tui = { showToast(payload) { assert.equal(this, tui); toasts.push(payload) } }
-    const plugin = createCodeGraphPlugin({}, {
-      updatePluginVersion: async (_config, callback) => { callbacks.push(callback); return true },
-    })
+    const dependencies = { updatePluginVersion: async (_config, callback) => { callbacks.push(callback); return true }, resolveRuntime: () => { throw new Error("unused") } }
     const input = { directory: root, client: { tui, app: { log: async ({ body }) => logs.push(body.message) } } }
-    const hooks = await plugin(input)
+    const hooks = await legacy(input, {}, dependencies)
     assert.equal(hooks.config({}), undefined)
     assert.equal(hooks.config({}), undefined)
     await Promise.resolve()
@@ -339,7 +337,7 @@ test("更新通知使用原生英文参数，每个插件实例只通知一次",
     } }])
     assert.equal(logs.filter((message) => message.includes("restart required")).length, 3)
 
-    const second = await plugin(input)
+    const second = await legacy(input, {}, dependencies)
     second.config({})
     await Promise.resolve()
     callbacks[2].onSuccess(TEST_LATEST_VERSION)
@@ -352,17 +350,17 @@ test("无更新、写失败和 disabled 不通知", async () => {
     for (const outcome of ["unchanged", "write-failed", "disabled"]) {
       let calls = 0
       const toasts = []
-      const hooks = await createCodeGraphPlugin({ enabled: outcome !== "disabled" }, {
+      const hooks = await legacy({ directory: root, client: {
+        app: { log: async () => {} },
+        tui: { showToast: (payload) => toasts.push(payload) },
+      } }, { enabled: outcome !== "disabled" }, {
         updatePluginVersion: async (_config, { onSuccess }) => {
           calls += 1
           if (outcome === "write-failed") throw new Error("mock write failure")
           if (outcome === "disabled") onSuccess(TEST_LATEST_VERSION)
           return false
         },
-      })({ directory: root, client: {
-        app: { log: async () => {} },
-        tui: { showToast: (payload) => toasts.push(payload) },
-      } })
+      }, { resolveRuntime: () => { throw new Error("unused") } })
       assert.equal(hooks.config({}), undefined)
       await new Promise(setImmediate)
       assert.equal(calls, outcome === "disabled" ? 0 : 1)
@@ -389,7 +387,7 @@ test("缺少 SDK、同步异常、异步拒绝和悬挂通知不影响更新返�
         }
       }
       const runtime = { nodePath: "/node", cliPath: "/cli", workerPath: "/worker", launcherPath: "/launcher" }
-      const hooks = await createCodeGraphPlugin({}, {
+      const hooks = await legacy({ directory: root, client: mode === "no-client" ? undefined : client }, {}, {
         resolveRuntime: () => runtime,
         updatePluginVersion: async (_config, { onSuccess }) => {
           onSuccess(TEST_LATEST_VERSION)
@@ -397,10 +395,15 @@ test("缺少 SDK、同步异常、异步拒绝和悬挂通知不影响更新返�
           updated = true
           return true
         },
-      })({ directory: root, client: mode === "no-client" ? undefined : client })
+      })
       const config = {}
       assert.equal(hooks.config(config), undefined)
-      assert.deepEqual(config.mcp.codegraph, mcpConfig(runtime))
+      assert.deepEqual(config.mcp.codegraph, {
+        type: "local",
+        command: [runtime.nodePath, "--liftoff-only", "--disable-warning=ExperimentalWarning", runtime.launcherPath],
+        environment: { CODEGRAPH_NO_DOWNLOAD: "1" },
+        enabled: true,
+      })
       await new Promise(setImmediate)
       assert.equal(updated, true, mode)
       assert.equal(toastCalls, ["throw", "reject", "pending"].includes(mode) ? 1 : 0, mode)

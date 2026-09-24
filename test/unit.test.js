@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import publicPlugin from "../src/index.js"
+import v2Plugin from "../src/server.js"
 import * as publicModule from "../src/index.js"
 import {
   acquireInitLock,
@@ -18,18 +19,39 @@ import {
   releaseInitLock,
 } from "../src/internal.js"
 
-test("enabled 开关可关闭所有接管", async () => {
+function mockContext({ location, options = {} }) {
+  const servers = new Map()
+  const hooks = new Map()
+  return {
+    location,
+    options,
+    servers,
+    hooks,
+    mcp: {
+      transform: async (transform) => transform({
+        get: (name) => servers.get(name),
+        set: (name, config) => servers.set(name, config),
+      }),
+    },
+    session: {
+      hook: async (name, callback) => hooks.set(name, callback),
+    },
+  }
+}
+
+test("legacy 公开入口仅导出默认函数", async () => {
   assert.deepEqual(Object.keys(publicModule), ["default"])
+  assert.equal(typeof publicPlugin, "function")
+})
+
+test("v2 插件 enabled 关闭所有接管", async () => {
   const root = await mkdtemp(join(tmpdir(), "codegraph-bridge-disabled-"))
   try {
     await mkdir(join(root, ".git"))
-    const hooks = await publicPlugin({ directory: root, worktree: root }, { enabled: false })
-    const config = {}
-    hooks.config(config)
-    assert.deepEqual(config, {})
-    const output = { system: [] }
-    await hooks["experimental.chat.system.transform"]({}, output)
-    assert.deepEqual(output.system, [])
+    const ctx = mockContext({ location: { directory: root }, options: { enabled: false } })
+    await v2Plugin.setup(ctx)
+    assert.equal(ctx.servers.size, 0)
+    assert.equal(ctx.hooks.size, 0)
   } finally {
     await rm(root, { recursive: true, force: true })
   }
@@ -52,18 +74,20 @@ test("就绪条件拒绝空索引和不完整状态", () => {
 
 test("MCP 注册只补充缺失键并保留用户配置", () => {
   const runtime = { nodePath: "/opt/codegraph/node", cliPath: "/opt/codegraph/cli.js", workerPath: "/opt/plugin/worker.js", launcherPath: "/opt/plugin/mcp-launcher.js" }
+  const root = process.cwd()
   const config = { mcp: { existing: { type: "remote" } } }
-  assert.equal(registerMcp(config, runtime), true)
-  assert.deepEqual(config.mcp.codegraph, mcpConfig(runtime))
+  assert.equal(registerMcp(config, runtime, root), true)
+  assert.deepEqual(config.mcp.codegraph, mcpConfig(runtime, root))
   assert.deepEqual(config.mcp.codegraph.command, [
     runtime.nodePath,
     "--liftoff-only",
     "--disable-warning=ExperimentalWarning",
     runtime.launcherPath,
   ])
-  assert.equal(config.mcp.codegraph.enabled, true)
+  assert.equal(config.mcp.codegraph.cwd, root)
+  assert.equal(config.mcp.codegraph.disabled, false)
   const user = { mcp: { codegraph: { enabled: false, command: ["user-server"] } } }
-  assert.equal(registerMcp(user, runtime), false)
+  assert.equal(registerMcp(user, runtime, root), false)
   assert.deepEqual(user.mcp.codegraph.command, ["user-server"])
 })
 
@@ -108,49 +132,101 @@ test("数据目录符号链接在 status 前被拒绝", async (t) => {
   }
 })
 
-test("system hook 只在 MCP 配置注入后添加无路径 CodeGraph 提示", async () => {
+test("仅以 location.directory 为根并使 MCP cwd 与验证根对齐", async () => {
   const root = await mkdtemp(join(tmpdir(), "codegraph-bridge-prompt-"))
   const runtime = { nodePath: "/node", cliPath: "/cli", workerPath: "/worker", launcherPath: "/launcher" }
   try {
     await mkdir(join(root, ".git"))
-    const plugin = createCodeGraphPlugin({}, {
+    const nested = join(root, "nested")
+    await mkdir(nested)
+    const setup = createCodeGraphPlugin({}, {
       resolveRuntime: () => runtime,
     })
-    const hooks = await plugin({
-      directory: root,
-      worktree: root,
-      client: { app: { log: async () => {} } },
+    const subdirectory = mockContext({
+      location: { directory: nested, project: { canonical: root, directory: root } },
     })
-    const beforeConfig = { system: [] }
-    await hooks["experimental.chat.system.transform"]({}, beforeConfig)
-    assert.deepEqual(beforeConfig.system, [])
+    await setup(subdirectory)
+    assert.equal(subdirectory.servers.size, 0)
+    assert.equal(subdirectory.hooks.size, 0)
 
-    const config = {}
-    hooks.config(config)
+    const ctx = mockContext({
+      location: { directory: root },
+    })
+    await setup(ctx)
+    assert.deepEqual(ctx.servers.get("codegraph"), mcpConfig(runtime, root))
     const output = { system: [] }
-    await hooks["experimental.chat.system.transform"]({}, output)
-    assert.deepEqual(output.system, [
-      "When CodeGraph tools are available in this session, use their exploration capability first to locate and understand relevant code before broad searches or reading unrelated files. Follow their provided instructions and use returned context for targeted reads; avoid re-fetching context already available. If the tools are unavailable or results are insufficient or stale, fall back to permitted file-reading and search tools.",
-    ])
+    ctx.hooks.get("context")(output)
+    assert.deepEqual(output.system, [{
+      type: "text",
+      text: "When CodeGraph tools are available in this session, use their exploration capability first to locate and understand relevant code before broad searches or reading unrelated files. Follow their provided instructions and use returned context for targeted reads; avoid re-fetching context already available. If the tools are unavailable or results are insufficient or stale, fall back to permitted file-reading and search tools.",
+    }])
   } finally {
     await rm(root, { recursive: true, force: true })
   }
 })
 
-test("home 与非 Git 根不注入 MCP", async () => {
+test("延迟执行的 MCP transform 完成 set 后启用已注册提示 hook，重复 transform 不重复注册", async () => {
+  const root = await mkdtemp(join(tmpdir(), "codegraph-bridge-deferred-"))
   const runtime = { nodePath: "/node", cliPath: "/cli", workerPath: "/worker", launcherPath: "/launcher" }
-  const plugin = createCodeGraphPlugin({}, { resolveRuntime: () => runtime })
+  try {
+    await mkdir(join(root, ".git"))
+    let transformCallback
+    const servers = new Map()
+    const hooks = []
+    const ctx = {
+      location: { directory: root },
+      options: {},
+      mcp: { transform: async (callback) => { transformCallback = callback } },
+      session: { hook: async (name, callback) => hooks.push({ name, callback }) },
+    }
+    await createCodeGraphPlugin({}, { resolveRuntime: () => runtime })(ctx)
+    assert.equal(hooks.length, 1)
+    assert.equal(hooks[0].name, "context")
+
+    const output = { system: [] }
+    hooks[0].callback(output)
+    assert.deepEqual(output.system, [])
+
+    const editor = {
+      get: (name) => servers.get(name),
+      set: (name, config) => servers.set(name, config),
+    }
+    transformCallback(editor)
+    transformCallback(editor)
+    assert.deepEqual(servers.get("codegraph"), mcpConfig(runtime, root))
+    hooks[0].callback(output)
+    assert.equal(output.system.length, 1)
+    assert.equal(hooks.length, 1)
+
+    servers.set("codegraph", { type: "local", command: ["user-server"], disabled: true })
+    transformCallback(editor)
+    const afterReplacement = { system: [] }
+    hooks[0].callback(afterReplacement)
+    assert.deepEqual(afterReplacement.system, [])
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("不安全根与用户已有 MCP 不注入、不注册提示 hook", async () => {
+  const runtime = { nodePath: "/node", cliPath: "/cli", workerPath: "/worker", launcherPath: "/launcher" }
+  const setup = createCodeGraphPlugin({}, { resolveRuntime: () => runtime })
   const plain = await mkdtemp(join(tmpdir(), "codegraph-bridge-skip-"))
   try {
-    for (const directory of [homedir(), plain]) {
-      const hooks = await plugin({ directory, worktree: directory, client: { app: { log: async () => {} } } })
-      const config = {}
-      hooks.config(config)
-      assert.equal(config.mcp, undefined)
-      const output = { system: [] }
-      await hooks["experimental.chat.system.transform"]({}, output)
-      assert.deepEqual(output.system, [])
-    }
+    const unsafe = mockContext({ location: { directory: homedir() } })
+    await setup(unsafe)
+    assert.equal(unsafe.servers.size, 0)
+    assert.equal(unsafe.hooks.size, 0)
+
+    const user = mockContext({ location: { directory: plain } })
+    user.servers.set("codegraph", { type: "local", command: ["user-server"] })
+    await mkdir(join(plain, ".git"))
+    await setup(user)
+    assert.deepEqual(user.servers.get("codegraph"), { type: "local", command: ["user-server"] })
+    assert.equal(user.hooks.size, 1)
+    const output = { system: [] }
+    user.hooks.get("context")(output)
+    assert.deepEqual(output.system, [])
   } finally {
     await rm(plain, { recursive: true, force: true })
   }

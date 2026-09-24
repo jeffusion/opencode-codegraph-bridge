@@ -33,13 +33,25 @@ jobs:
         run: npm run test:unit
       - name: Integration tests
         run: npm run test:integration
-      - name: Install pinned OpenCode CLI
-        run: npm install --global opencode-ai@1.18.29
+      - name: Install isolated OpenCode v1 CLI
+        run: npm --prefix /tmp/opencode-v1 install --no-save opencode-ai@1.18.29
+      - name: Verify OpenCode v1 CLI
+        run: /tmp/opencode-v1/node_modules/.bin/opencode --version
+      - name: OpenCode v1 smoke test
+        run: |
+          OPENCODE_V1_ENTRY=legacy node test/opencode-v1-smoke.js
+          OPENCODE_V1_ENTRY=server node test/opencode-v1-smoke.js
+        env:
+          OPENCODE_BIN: /tmp/opencode-v1/node_modules/.bin/opencode
+      - name: Install pinned OpenCode v2 CLI (available npm beta)
+        run: npm install --global @opencode-ai/cli@0.0.0-beta-19271
       - name: Verify OpenCode CLI
         run: |
-          command -v opencode
-          opencode --version
+          command -v opencode2
+          opencode2 --version
       - name: OpenCode smoke test
         run: npm run test:opencode
+        env:
+          OPENCODE_BIN: opencode2
       - name: Package dry run
         run: npm pack --dry-run

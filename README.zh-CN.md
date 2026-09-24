@@ -1,6 +1,6 @@
 # CodeGraph Bridge for OpenCode
 
-无需手工配置 MCP 服务或执行首次索引，即可在 OpenCode 中使用 CodeGraph 的结构化代码探索能力。
+无需手工配置 MCP 服务或执行首次索引，即可在 OpenCode 中使用 CodeGraph 的结构化代码探索能力。本包支持 OpenCode v1 和 v2 配置格式。
 
 [English](https://github.com/jeffusion/opencode-codegraph-bridge/blob/main/README.md)
 
@@ -14,34 +14,52 @@ CodeGraph 能回答纯文本搜索难以回答的代码结构问题，但需要�
 
 ## 功能
 
-- 仅当你尚未配置时注册 `mcp.codegraph`。
+- 仅当对应的 v1 或 v2 MCP 配置尚不存在时注册 CodeGraph MCP 服务。
 - 后台建立首次索引，MCP 注册不会等待索引完成。
-- 仅在健康索引就绪后，加入优先使用 CodeGraph 进行结构化探索的提示。
+- 为安全的 Git 根成功注入 MCP 服务后注册 session context 提示：v1 使用 `experimental.chat.system.transform`，v2 使用 `ctx.session.hook('context')`；提示建议在 CodeGraph 工具可用时使用它。
 - 使用本包安装的 `@colbymchenry/codegraph` 依赖（`^1.6.0`），不依赖全局 `codegraph` 命令。
 
 ## 快速开始
 
-注册本次运行的版本，然后重启 OpenCode：
+为保持向后兼容，安装器默认使用旧版 v1 格式。安装后请重启 OpenCode：
 
 ```sh
 npx opencode-codegraph-bridge install
 ```
 
-安装器只会把本次运行包的精确版本写入标准全局 OpenCode 配置目录（`$XDG_CONFIG_HOME/opencode`，或 `~/.config/opencode`）。必须重启 OpenCode 才会加载安装的插件；安装器不会修改 `AGENTS.md` 或 MCP 配置。
+若要明确写入 v2 配置，请使用：
 
-为避免重复加载 bridge：配置中不存在 npm bridge 条目、但含有 `file:`、git 或 npm alias 插件时，安装器会要求你手工确认配置，不会自动追加。
+```sh
+npx opencode-codegraph-bridge install --format v2
+```
 
-手工配置仍可作为替代方案：将本包加入现有配置的 `plugin` 数组，并保留其他所有条目：
+安装器会将本次运行包的精确版本写入标准全局 OpenCode 配置目录（`$XDG_CONFIG_HOME/opencode`，或 `~/.config/opencode`），并保留现有配置格式。如果请求的格式与现有配置冲突，安装会停止，需手工确认并解决冲突，不会自动转换或覆盖。安装器不会修改 `AGENTS.md` 或 MCP 配置。
+
+## 配置
+
+OpenCode v1 使用 `plugin`，v2 使用 `plugins`。添加 bridge 时应沿用现有格式，并保留其他所有条目。
+
+v1 中，启用插件时可直接使用包名字符串；禁用时使用 tuple 形式：
 
 ```json
 {
   "plugin": [
-    "opencode-codegraph-bridge"
+    ["opencode-codegraph-bridge", { "enabled": false }]
   ]
 }
 ```
 
-不需要手工执行 `npm install`、全局安装 `codegraph`，也不需要全局 `OpenCode/AGENTS.md`。插件只索引 OpenCode 通过 `worktree` 或 `directory` 提供的 Git 根目录；CodeGraph 数据存放在该项目的 `.codegraph` 中（或你设置的有效 `CODEGRAPH_DIR` 名称）。
+v2 使用对象条目；将 `options.enabled` 设为 `false` 可禁用插件：
+
+```json
+{
+  "plugins": [
+    { "package": "opencode-codegraph-bridge", "options": { "enabled": false } }
+  ]
+}
+```
+
+v1 与 v2 插件配置格式不可互换。不需要手工执行 `npm install`、全局安装 `codegraph`，也不需要全局 `OpenCode/AGENTS.md`。插件从 OpenCode 上下文获取项目位置，并且只索引安全的 Git 根目录；CodeGraph 数据存放在该项目的 `.codegraph` 中（或你设置的有效 `CODEGRAPH_DIR` 名称）。
 
 ## 使用方式
 
@@ -55,34 +73,17 @@ npx opencode-codegraph-bridge install
 
 ## 工作方式
 
-1. OpenCode 配置阶段，若不存在 `mcp.codegraph`，插件注册本地 CodeGraph MCP 服务。
+1. 对于安全的 Git 根，插件仅在尚无对应 MCP 配置时注入本地 CodeGraph MCP 服务，然后注册 session context 提示：v1 使用 `experimental.chat.system.transform`，v2 使用 `ctx.session.hook('context')`。提示建议在 CodeGraph 工具可用时使用它；注册提示不会等待健康索引就绪。
 2. 独立 Node worker 按需检查项目，并在后台建立首次索引。
-3. CodeGraph 报告健康且非空的索引后，插件向聊天系统提示加入精简的 CodeGraph 使用指引。
-4. 后续文件变化由 CodeGraph MCP 服务监视。
+3. 后续文件变化由 CodeGraph MCP 服务监视。
 
-已有的 `mcp.codegraph`（包括 disabled 条目）绝不会被覆盖，该配置自行管理其生命周期。
+MCP 配置键因 OpenCode 格式而异：v1 使用 `mcp.codegraph` 和 `enabled` 标记；v2 使用 `mcp.servers.codegraph` 和 `disabled` 标记。例如，禁用的 v1 配置为 `"mcp": { "codegraph": { "enabled": false } }`；对应的 v2 配置为 `"mcp": { "servers": { "codegraph": { "disabled": true } } }`。已有 MCP 配置（包括已禁用的条目）绝不会被覆盖，该配置自行管理其生命周期。
 
-## 配置
+插件没有其他选项。不同的 OpenCode v1/v2 版本可能具备不同能力；此处的兼容说明不代表承诺支持所有 v1 子版本。
 
-使用唯一支持的 tuple 选项禁用插件：
+## 更新
 
-```json
-{
-  "plugin": [["opencode-codegraph-bridge", { "enabled": false }]]
-}
-```
-
-没有其他插件选项。
-
-## 自动更新
-
-插件启用时会在启动阶段查询一次官方 npm registry。只有 OpenCode 能识别出唯一、明确且安全的本地或全局配置来源时，插件才可能将**自己的**包 spec 更新为最新的精确稳定版本；来源不清晰或不安全时会跳过，不会猜测写入位置。
-
-当前 OpenCode 会话不会热加载。更新成功后，支持原生 OpenCode notification 的客户端会收到标题为 `CodeGraph Bridge` 的 OpenCode 通知：
-
-> Update ready. Restart OpenCode to apply.
-
-通知是否可见取决于客户端的原生 OpenCode notification 支持。更新器不会修改 CodeGraph 依赖、安装全局工具，或更改你的 npm registry 设置。
+v1 仅在 `plugin_origins` 能提供可信且可识别的插件来源时保留自动更新；没有可信来源时会跳过更新。v2 不会自动更新。请在 OpenCode 实际使用的配置文件中手动升级本包（或使用最初安装时采用的包管理器升级），然后重启 OpenCode。
 
 ## 平台说明
 
@@ -92,15 +93,8 @@ CodeGraph 的平台运行时从本包依赖树中解析。本 bridge 已在 Linu
 
 | 问题 | 检查方式 |
 | --- | --- |
-| 没有 CodeGraph MCP 工具 | 在 OpenCode 中打开 Git 项目根目录；已有 `mcp.codegraph` 会按设计优先；再查看 OpenCode 日志是否提示 CodeGraph 依赖缺失。 |
-| 更新后没有生效 | 重启 OpenCode；更新不会重载当前会话。 |
+| 没有 CodeGraph MCP 工具 | 在 OpenCode 中打开 Git 项目根目录；已有 `mcp.servers.codegraph`（v2）或 `mcp.codegraph`（v1）会按设计优先；再查看 OpenCode 日志是否提示 CodeGraph 依赖缺失。 |
 | npm 镜像返回 404 | 先运行 `npm config get registry`，再用 `npm view opencode-codegraph-bridge version --registry=https://registry.npmjs.org/` 显式检查官方包。仅在你确有意图时更改 registry。 |
-
-<details>
-<summary>高级：处理残留锁</summary>
-
-仅在确认没有 bridge 或索引进程运行后操作。检查并在合适时删除受影响 OpenCode 配置旁的 `.opencode-codegraph-bridge.update.lock`，或项目中 `.codegraph/.opencode-codegraph-auto.init.lock`。插件不会自动接管残留锁。
-</details>
 
 ## 开发
 
@@ -110,11 +104,23 @@ cd opencode-codegraph-bridge && npm ci
 npm run test:unit && npm run test:integration && npm run test:opencode
 ```
 
-本地开发时使用绝对 file URL，并保留其他插件：
+本地开发时，根据 OpenCode 配置格式选择入口。v1 插件入口可指向 `./src/index.js` 或包根目录的 `index.js`。v2 的 `package` 指向包含 `server.js` 的包目录。请保留其他插件。
+
+v1 示例：
 
 ```json
 {
-  "plugin": ["file:///absolute/path/opencode-codegraph-bridge/src/index.js"]
+  "plugin": ["/absolute/path/opencode-codegraph-bridge/src/index.js"]
+}
+```
+
+v2 示例：
+
+```json
+{
+  "plugins": [
+    { "package": "/absolute/path/opencode-codegraph-bridge" }
+  ]
 }
 ```
 

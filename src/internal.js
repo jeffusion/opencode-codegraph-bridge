@@ -4,7 +4,6 @@ import { homedir } from "node:os"
 import { dirname, join, parse, resolve, sep } from "node:path"
 import { fileURLToPath } from "node:url"
 import { spawn } from "node:child_process"
-import { updatePluginVersion } from "./update.js"
 
 const require = createRequire(import.meta.url)
 const LOCK_NAME = ".opencode-codegraph-auto.init.lock"
@@ -213,21 +212,22 @@ export function workerCommand(runtime, root, hostPid = process.pid) {
   }
 }
 
-/** @param {Runtime} runtime */
-export function mcpConfig(runtime) {
+/** @param {Runtime} runtime @param {string} root */
+export function mcpConfig(runtime, root) {
   return {
     type: "local",
     command: [runtime.nodePath, "--liftoff-only", "--disable-warning=ExperimentalWarning", runtime.launcherPath],
+    cwd: root,
     environment: { CODEGRAPH_NO_DOWNLOAD: "1" },
-    enabled: true,
+    disabled: false,
   }
 }
 
-/** @param {any} config @param {Runtime} runtime */
-export function registerMcp(config, runtime) {
+/** @param {any} config @param {Runtime} runtime @param {string} root */
+export function registerMcp(config, runtime, root) {
   config.mcp ??= {}
   if (Object.prototype.hasOwnProperty.call(config.mcp, "codegraph")) return false
-  config.mcp.codegraph = mcpConfig(runtime)
+  config.mcp.codegraph = mcpConfig(runtime, root)
   return true
 }
 
@@ -329,102 +329,53 @@ function fallbackLog(message) {
   console.error(`[opencode-codegraph-bridge] ${message}`)
 }
 
-/** @param {any} input @param {string} message */
-function log(input, message) {
-  const appLog = input?.client?.app?.log
-  if (typeof appLog === "function") {
-    Promise.resolve(appLog.call(input.client.app, {
-      body: { service: "opencode-codegraph-bridge", level: "info", message },
-    })).catch(() => fallbackLog(message))
-    return
-  }
-  fallbackLog(message)
-}
-
 /**
  * @param {CodeGraphBridgeOptions} [options]
- * @param {{ resolveRuntime?: typeof resolveRuntime, updatePluginVersion?: typeof updatePluginVersion }} [dependencies]
- * @returns {import("@opencode-ai/plugin").Plugin}
+ * @param {{ resolveRuntime?: typeof resolveRuntime }} [dependencies]
+ * @returns {(ctx: any) => Promise<void>}
  */
 export function createCodeGraphPlugin(options = {}, dependencies = {}) {
-  const enabled = options.enabled !== false
   const resolveRuntimeFn = dependencies.resolveRuntime || resolveRuntime
-  const updatePluginVersionFn = dependencies.updatePluginVersion || updatePluginVersion
+  return async (ctx) => {
+    if (ctx?.options?.enabled === false || options.enabled === false) return
 
-  return /** @type {import("@opencode-ai/plugin").Plugin} */ (async (input) => {
-    let runtime = null
-    let managed = enabled
-    let configCompleted = false
-    let injectedMcp = null
-    let updateNotified = false
-
-    const notifyUpdate = async () => {
-      if (updateNotified) return
-      updateNotified = true
-      try {
-        await input.client?.tui?.showToast?.({
-          body: {
-            title: "CodeGraph Bridge",
-            message: "Update ready. Restart OpenCode to apply.",
-            variant: "info",
-            duration: 5000,
-          },
-        })
-      } catch {
-        // Notification failure must not turn a completed update into a failure.
-      }
+    let runtime
+    try {
+      runtime = resolveRuntimeFn()
+    } catch (error) {
+      fallbackLog(`CodeGraph 依赖不可用，已跳过注册和索引：${error?.message || String(error)}`)
+      return
     }
 
-    if (managed) {
-      try {
-        runtime = resolveRuntimeFn()
-      } catch (error) {
-        managed = false
-        log(input, `CodeGraph 依赖不可用，已跳过注册和索引：${error?.message || String(error)}`)
-      }
+    const project = normalizeProjectRoot(ctx?.location?.directory, undefined)
+    if (!project.root) {
+      fallbackLog(`项目根目录不满足条件（${project.reason}），不注册 CodeGraph MCP。`)
+      return
     }
+    const root = project.root
 
-    /** @param {any} config */
-    const config = (config) => {
-      if (enabled) {
-        void Promise.resolve().then(() => updatePluginVersionFn(config, {
-          onSuccess: (version) => {
-            log(input, `opencode-codegraph-bridge updated to ${version}; restart required.`)
-            void notifyUpdate()
-          },
-        })).catch((error) => log(input, `opencode-codegraph-bridge 版本检查已跳过：${error?.message || String(error)}`))
-      }
-      if (!managed || !runtime) return
-      if (Object.prototype.hasOwnProperty.call(config.mcp || {}, "codegraph")) {
-        if (config.mcp.codegraph === injectedMcp) return
-        managed = false
-        log(input, "检测到用户已有 mcp.codegraph 配置，保持原配置并停止插件接管。")
+    let managed = false
+    let injectedMcp
+    await ctx.session.hook("context", (event) => {
+      if (!managed) return
+      event.system.push({
+        type: "text",
+        text: "When CodeGraph tools are available in this session, use their exploration capability first to locate and understand relevant code before broad searches or reading unrelated files. Follow their provided instructions and use returned context for targeted reads; avoid re-fetching context already available. If the tools are unavailable or results are insufficient or stale, fall back to permitted file-reading and search tools.",
+      })
+    })
+
+    await ctx.mcp.transform((editor) => {
+      const existing = editor.get("codegraph")
+      if (existing) {
+        managed = existing === injectedMcp
+        if (!managed) fallbackLog("检测到用户已有 codegraph MCP 配置，保持原配置并停止插件接管。")
         return
       }
-      // 提前用 launcher 同一套判定：不安全/非 Git 根时不注册 MCP，
-      // 避免 launcher 在 handshake 前退出导致 MCP error -32000。
-      const project = normalizeProjectRoot(input?.directory, input?.worktree)
-      if (!project.root) {
-        managed = false
-        log(input, `项目根目录不满足条件（${project.reason}），不注册 CodeGraph MCP。`)
-        return
-      }
-      if (!registerMcp(config, runtime)) {
-        managed = false
-        return
-      }
-      injectedMcp = config.mcp.codegraph
-      configCompleted = true
-    }
-
-    return {
-      config,
-      "experimental.chat.system.transform": async (_event, output) => {
-        if (!configCompleted || !managed) return
-        if (output?.system) output.system.push("When CodeGraph tools are available in this session, use their exploration capability first to locate and understand relevant code before broad searches or reading unrelated files. Follow their provided instructions and use returned context for targeted reads; avoid re-fetching context already available. If the tools are unavailable or results are insufficient or stale, fall back to permitted file-reading and search tools.")
-      },
-    }
-  })
+      injectedMcp = mcpConfig(runtime, root)
+      editor.set("codegraph", injectedMcp)
+      managed = true
+    })
+  }
 }
 
 /** @param {Runtime} runtime @param {string} root @param {number} [hostPid] */

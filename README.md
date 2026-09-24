@@ -1,6 +1,6 @@
 # CodeGraph Bridge for OpenCode
 
-Use CodeGraph's structural code exploration in OpenCode without manually wiring an MCP server or running the first index.
+Use CodeGraph's structural code exploration in OpenCode without manually wiring an MCP server or running the first index. This package supports both OpenCode v1 and v2 configuration formats.
 
 [中文](https://github.com/jeffusion/opencode-codegraph-bridge/blob/main/README.zh-CN.md)
 
@@ -14,34 +14,52 @@ CodeGraph can answer structural questions that plain text search cannot, but its
 
 ## Features
 
-- Registers `mcp.codegraph` only when you have not already configured it.
+- Registers the CodeGraph MCP server only when the corresponding v1 or v2 MCP entry is not already configured.
 - Builds the first index in the background, so MCP registration does not wait for indexing.
-- Adds guidance to prefer CodeGraph for structural exploration only after a healthy index is ready.
+- After successfully injecting the MCP server for a safe Git root, registers session-context guidance using `experimental.chat.system.transform` in v1 and `ctx.session.hook('context')` in v2; the guidance recommends CodeGraph when its tools are available.
 - Uses the installed `@colbymchenry/codegraph` dependency (`^1.6.0`), not a global `codegraph` command.
 
 ## Quick start
 
-Register the version being run, then restart OpenCode:
+The installer defaults to the legacy v1 format for backward compatibility. Restart OpenCode after installation:
 
 ```sh
 npx opencode-codegraph-bridge install
 ```
 
-The installer only writes this invocation's exact package version to the standard global OpenCode config directory (`$XDG_CONFIG_HOME/opencode`, or `~/.config/opencode`). Restart OpenCode for the installed plugin to take effect. It never changes `AGENTS.md` or MCP configuration.
+To explicitly write a v2 configuration, use:
 
-For safety, if no npm bridge entry exists and the config contains a `file:`, git, or npm-alias plugin, the installer asks you to confirm the configuration manually instead of risking a duplicate bridge load.
+```sh
+npx opencode-codegraph-bridge install --format v2
+```
 
-Manual configuration remains an alternative; add the package to your existing `plugin` array while keeping every other entry:
+The installer writes the exact package version for this invocation to the standard global OpenCode config directory (`$XDG_CONFIG_HOME/opencode`, or `~/.config/opencode`). It preserves the existing configuration format; if the requested format conflicts with the existing configuration, installation stops and you must resolve the conflict manually. It does not change `AGENTS.md` or MCP configuration.
+
+## Configuration
+
+OpenCode v1 uses `plugin`; v2 uses `plugins`. Keep the existing format and retain all other entries when adding the bridge.
+
+For v1, an enabled plugin can be a package string; use the tuple form to disable it:
 
 ```json
 {
   "plugin": [
-    "opencode-codegraph-bridge"
+    ["opencode-codegraph-bridge", { "enabled": false }]
   ]
 }
 ```
 
-No manual `npm install`, global `codegraph` installation, or global `OpenCode/AGENTS.md` entry is required. The plugin only indexes the Git root supplied by OpenCode's `worktree` or `directory`; CodeGraph data is stored in that project under `.codegraph` (or the valid `CODEGRAPH_DIR` name you set).
+For v2, use an object entry; set `options.enabled` to `false` to disable it:
+
+```json
+{
+  "plugins": [
+    { "package": "opencode-codegraph-bridge", "options": { "enabled": false } }
+  ]
+}
+```
+
+The v1 and v2 plugin configuration formats are not interchangeable. No manual `npm install`, global `codegraph` installation, or global `OpenCode/AGENTS.md` entry is required. The plugin gets the project location from OpenCode's context and only indexes a safe Git root; CodeGraph data is stored in that project under `.codegraph` (or the valid `CODEGRAPH_DIR` name you set).
 
 ## Usage
 
@@ -55,34 +73,17 @@ If CodeGraph is unavailable or its result is insufficient, OpenCode can still us
 
 ## How it works
 
-1. At OpenCode configuration time, the plugin registers a local CodeGraph MCP server if `mcp.codegraph` is absent.
+1. For a safe Git root, the plugin injects a local CodeGraph MCP server only if one is not already configured, then registers session-context guidance using `experimental.chat.system.transform` in v1 or `ctx.session.hook('context')` in v2. The guidance recommends CodeGraph when its tools are available; registering it does not wait for a healthy index.
 2. A separate Node worker checks the project and builds the first index in the background when needed.
-3. Once CodeGraph reports a healthy, non-empty index, the plugin adds focused CodeGraph guidance to the chat system prompt.
-4. The CodeGraph MCP server watches later file changes.
+3. The CodeGraph MCP server watches later file changes.
 
-An existing `mcp.codegraph` entry, including a disabled one, is never replaced; that configuration owns its own lifecycle.
+The MCP configuration key differs by OpenCode format: v1 uses `mcp.codegraph` and its `enabled` flag; v2 uses `mcp.servers.codegraph` and its `disabled` flag. For example, a disabled v1 entry is `"mcp": { "codegraph": { "enabled": false } }`; the v2 equivalent is `"mcp": { "servers": { "codegraph": { "disabled": true } } }`. An existing entry, including a disabled one, is never replaced; that configuration owns its own lifecycle.
 
-## Configuration
+There are no other plugin options. OpenCode v1/v2 versions may differ in available capabilities; this compatibility statement does not promise support for every v1 subversion.
 
-Disable the plugin with its supported tuple option:
+## Updating
 
-```json
-{
-  "plugin": [["opencode-codegraph-bridge", { "enabled": false }]]
-}
-```
-
-There are no other plugin options.
-
-## Automatic updates
-
-When enabled, the plugin checks the official npm registry once at startup. If OpenCode identifies one unambiguous, safe local or global configuration source, the plugin may replace **only its own** package spec with the latest exact stable version. It skips an unclear or unsafe source rather than guessing.
-
-The current OpenCode session is not hot-reloaded. After a successful update, supported OpenCode clients receive an OpenCode notification titled `CodeGraph Bridge` with:
-
-> Update ready. Restart OpenCode to apply.
-
-Notification availability depends on the client's native OpenCode notification support. The updater does not change CodeGraph dependencies, install global tools, or alter your npm registry setting.
+For v1, automatic updating is retained only when `plugin_origins` provides a trusted, identifiable source for the plugin; without a trustworthy source, the update is skipped. For v2, the plugin does not update automatically. Manually upgrade the package in the configuration file OpenCode actually uses (or with the package manager used to install it), then restart OpenCode.
 
 ## Platform notes
 
@@ -92,15 +93,8 @@ CodeGraph's platform-specific runtime is resolved from this package's dependency
 
 | Problem | Check |
 | --- | --- |
-| No CodeGraph MCP tools | Open the Git project root in OpenCode; an existing `mcp.codegraph` entry deliberately takes precedence; then check OpenCode logs for a missing CodeGraph dependency. |
-| An update did not take effect | Restart OpenCode. Updates do not reload the active session. |
+| No CodeGraph MCP tools | Open the Git project root in OpenCode; an existing `mcp.servers.codegraph` (v2) or `mcp.codegraph` (v1) entry deliberately takes precedence; then check OpenCode logs for a missing CodeGraph dependency. |
 | npm mirror returns 404 | Inspect `npm config get registry`, then diagnose the official package explicitly with `npm view opencode-codegraph-bridge version --registry=https://registry.npmjs.org/`. Change your registry only if you intend to. |
-
-<details>
-<summary>Advanced: recover a leftover lock</summary>
-
-Do this only after confirming no bridge or indexing process is running. Inspect and, if appropriate, remove `.opencode-codegraph-bridge.update.lock` beside the affected OpenCode config, or `.codegraph/.opencode-codegraph-auto.init.lock` in the project. The plugin intentionally does not take over stale locks automatically.
-</details>
 
 ## Development
 
@@ -110,11 +104,23 @@ cd opencode-codegraph-bridge && npm ci
 npm run test:unit && npm run test:integration && npm run test:opencode
 ```
 
-For local development, use an absolute file URL and retain other plugins:
+For local development, use the entry form for the OpenCode configuration format in use. In v1, point the plugin entry to `./src/index.js` or the package-root `index.js`. In v2, point `package` at the absolute package directory containing `server.js`. Retain other plugins.
+
+v1 example:
 
 ```json
 {
-  "plugin": ["file:///absolute/path/opencode-codegraph-bridge/src/index.js"]
+  "plugin": ["/absolute/path/opencode-codegraph-bridge/src/index.js"]
+}
+```
+
+v2 example:
+
+```json
+{
+  "plugins": [
+    { "package": "/absolute/path/opencode-codegraph-bridge" }
+  ]
 }
 ```
 
