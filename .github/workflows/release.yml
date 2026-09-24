@@ -14,96 +14,35 @@ concurrency:
 jobs:
   release-please:
     runs-on: ubuntu-latest
-    permissions:
-      actions: write
-      contents: write
-      issues: write
-      pull-requests: write
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
+      - name: Check GitHub App credentials
+        env:
+          RELEASE_APP_ID: ${{ vars.RELEASE_APP_ID }}
+          RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+        run: |
+          if [ -z "$RELEASE_APP_ID" ] || [ -z "$RELEASE_APP_PRIVATE_KEY" ]; then
+            echo "::error::Missing GitHub App credentials. Configure the RELEASE_APP_ID repository variable and RELEASE_APP_PRIVATE_KEY repository secret."
+            exit 1
+          fi
+      - name: Create GitHub App token
+        id: app_token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
       - name: Release Please
         id: release
         uses: googleapis/release-please-action@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ steps.app_token.outputs.token }}
           config-file: .release-please-config.json
           manifest-file: .release-please-manifest.json
-      - name: Run CI for changed Release Please PR
-        if: ${{ steps.release.outputs.release_created != 'true' }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          RP_PR: ${{ steps.release.outputs.pr }}
-          RP_PRS: ${{ steps.release.outputs.prs }}
-          RP_PRS_CREATED: ${{ steps.release.outputs.prs_created }}
-        run: |
-          node <<'NODE'
-          const { execFileSync } = require('node:child_process')
-          const repo = process.env.GITHUB_REPOSITORY
-          if (!/^[^/]+\/[^/]+$/.test(repo)) throw new Error(`非法仓库标识: ${repo}`)
-          const parseOutput = (name) => {
-            const value = process.env[name]
-            if (!value || !value.trim() || ['null', 'undefined'].includes(value.trim())) return null
-            try { return JSON.parse(value) } catch { throw new Error(`Release Please ${name} 不是有效 JSON`) }
-          }
-          const prsCreatedOutput = process.env.RP_PRS_CREATED || ''
-          if (!['true', 'false', ''].includes(prsCreatedOutput.toLowerCase())) {
-            throw new Error(`Release Please prs_created 无效: ${prsCreatedOutput}`)
-          }
-          const prsCreated = prsCreatedOutput.toLowerCase() === 'true'
-          const prsOutput = parseOutput('RP_PRS')
-          const prOutput = parseOutput('RP_PR')
-          let candidates
-          if (prsOutput !== null) {
-            if (!Array.isArray(prsOutput)) throw new Error('Release Please prs output 必须是数组')
-            if (prsOutput.length > 0) candidates = prsOutput
-          }
-          if (!candidates && prOutput !== null) {
-            if (!prOutput || typeof prOutput !== 'object' || Array.isArray(prOutput)) {
-              throw new Error('Release Please pr output 必须是对象')
-            }
-            candidates = [prOutput]
-          }
-          if (!candidates) {
-            if (prsCreated) throw new Error('Release Please 报告创建/更新了 PR，但未提供 PR 输出')
-            console.log('Release Please 未创建或更新 PR，跳过 CI dispatch。')
-            process.exit(0)
-          }
-          const numbers = new Set()
-          for (const candidate of candidates) {
-            if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate) ||
-              !Number.isInteger(candidate.number) || candidate.number <= 0) {
-              throw new Error('Release Please PR number 必须是正整数')
-            }
-            if (numbers.has(candidate.number)) throw new Error(`Release Please PR number 重复: ${candidate.number}`)
-            numbers.add(candidate.number)
-            if (typeof candidate.headBranchName !== 'string' ||
-              !candidate.headBranchName.startsWith('release-please--branches--main') ||
-              candidate.baseBranchName !== 'main') {
-              throw new Error(`Release Please PR #${candidate.number} 的 head/base 分支输出无效`)
-            }
-          }
-          for (const candidate of candidates) {
-            const detail = JSON.parse(execFileSync('gh', [
-              'api', `repos/${repo}/pulls/${candidate.number}`,
-            ], { encoding: 'utf8' }))
-            const valid = detail?.state === 'open' &&
-              detail.base?.ref === 'main' &&
-              detail.head?.ref === candidate.headBranchName &&
-              detail.head?.repo?.full_name === repo &&
-              detail.user?.login === 'github-actions[bot]' &&
-              typeof detail.head?.sha === 'string' && /^[a-f0-9]{40}$/i.test(detail.head.sha)
-            if (!valid) {
-              throw new Error(`Release Please PR #${candidate.number} 权威元数据与输出不匹配或无效`)
-            }
-            execFileSync('gh', [
-              'workflow', 'run', 'ci.yml', '--repo', repo, '--ref', detail.head.ref,
-            ], { stdio: 'inherit' })
-            console.log(`已为 Release Please PR #${candidate.number} 的 ${detail.head.ref}@${detail.head.sha} dispatch ci.yml。`)
-          }
-          NODE
 
   publish:
     needs: release-please
