@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.6.1](https://github.com/jeffusion/opencode-codegraph-bridge/compare/v0.6.0...v0.6.1) (2026-09-24)
+
+
+### Bug Fixes
+
+* **ci:** dispatch checks for release PRs from action outputs ([57189b3](https://github.com/jeffusion/opencode-codegraph-bridge/commit/57189b3284289c1928a8a50e46d6d5e07e4d39b7))
+* **ci:** use GitHub App for release PR checks ([7a7b0fd](https://github.com/jeffusion/opencode-codegraph-bridge/commit/7a7b0fdda125c6f43f1b7fda891904985633b50f))
+* **test:** snapshot isolated symlink targets ([7330ddb](https://github.com/jeffusion/opencode-codegraph-bridge/commit/7330ddb1ef9b3aabfdfe45d72684b14660d1b262))
+
 ## [0.6.0](https://github.com/jeffusion/opencode-codegraph-bridge/compare/v0.5.0...v0.6.0) (2026-09-24)
 
 
