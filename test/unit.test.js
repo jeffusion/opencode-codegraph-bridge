@@ -4,7 +4,6 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import publicPlugin from "../src/index.js"
-import v2Plugin from "../src/server.js"
 import * as publicModule from "../src/index.js"
 import {
   acquireInitLock,
@@ -46,12 +45,96 @@ test("legacy 公开入口仅导出默认函数", async () => {
 
 test("v2 插件 enabled 关闭所有接管", async () => {
   const root = await mkdtemp(join(tmpdir(), "codegraph-bridge-disabled-"))
+  const runtime = { nodePath: "/node", cliPath: "/cli", workerPath: "/worker", launcherPath: "/launcher" }
   try {
     await mkdir(join(root, ".git"))
     const ctx = mockContext({ location: { directory: root }, options: { enabled: false } })
-    await v2Plugin.setup(ctx)
+    await createCodeGraphPlugin({}, { resolveRuntime: () => runtime, updateRunner: async () => false })(ctx)
     assert.equal(ctx.servers.size, 0)
     assert.equal(ctx.hooks.size, 0)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("后台更新不阻塞 MCP 注册，失败不影响插件；禁用时不调用", async () => {
+  const root = await mkdtemp(join(tmpdir(), "codegraph-bridge-update-"))
+  const runtime = { nodePath: "/node", cliPath: "/cli", workerPath: "/worker", launcherPath: "/launcher" }
+  try {
+    await mkdir(join(root, ".git"))
+    let rejectUpdate
+    let calls = 0
+    const setup = createCodeGraphPlugin({}, {
+      resolveRuntime: () => runtime,
+      updateRunner: () => { calls++; return new Promise((_, reject) => { rejectUpdate = reject }) },
+    })
+    const ctx = mockContext({ location: { directory: root } })
+    await setup(ctx)
+    assert.equal(ctx.servers.has("codegraph"), true)
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.equal(calls, 1)
+    rejectUpdate(new Error("network failure"))
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.equal(ctx.servers.has("codegraph"), true)
+
+    let disabledCalls = 0
+    const disabledSetup = createCodeGraphPlugin({}, {
+      resolveRuntime: () => runtime,
+      updateRunner: () => { disabledCalls++ },
+    })
+    await disabledSetup(mockContext({ location: { directory: root }, options: { enabled: false } }))
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.equal(disabledCalls, 0)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("后台来源检查异步使用当前 location，缺少 API 或列表失败时跳过", async () => {
+  const root = await mkdtemp(join(tmpdir(), "codegraph-bridge-source-check-"))
+  const runtime = { nodePath: "/node", cliPath: "/cli", workerPath: "/worker", launcherPath: "/launcher" }
+  try {
+    await mkdir(join(root, ".git"))
+    const verified = []
+    const validPlugin = {
+      id: "opencode-codegraph-bridge",
+      source: { type: "package", target: "opencode-codegraph-bridge@1.2.3" },
+      features: { server: true },
+      state: { status: "active" },
+    }
+    const setup = createCodeGraphPlugin({}, {
+      resolveRuntime: () => runtime,
+      pluginList: async (input) => {
+        assert.deepEqual(input, { location: { directory: root } })
+        return { location: { directory: root }, data: [validPlugin] }
+      },
+      updateRunner: async (_projectRoot, { sourceCheck }) => { verified.push(await sourceCheck()) },
+    })
+    await setup(mockContext({ location: { directory: root } }))
+    assert.deepEqual(verified, [])
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.deepEqual(verified, ["opencode-codegraph-bridge@1.2.3"])
+
+    let rejectedCheck = false
+    const failedListSetup = createCodeGraphPlugin({}, {
+      resolveRuntime: () => runtime,
+      pluginList: async () => { throw new Error("list unavailable") },
+      updateRunner: async (_projectRoot, { sourceCheck }) => {
+        try { await sourceCheck() } catch { rejectedCheck = true }
+      },
+    })
+    await failedListSetup(mockContext({ location: { directory: root } }))
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.equal(rejectedCheck, true)
+
+    let missingApiCalls = 0
+    const missingApiSetup = createCodeGraphPlugin({}, {
+      resolveRuntime: () => runtime,
+      updateRunner: async (_projectRoot, { sourceCheck }) => { missingApiCalls += await sourceCheck() ? 1 : 0 },
+    })
+    await missingApiSetup(mockContext({ location: { directory: root } }))
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.equal(missingApiCalls, 0)
   } finally {
     await rm(root, { recursive: true, force: true })
   }
@@ -141,6 +224,7 @@ test("仅以 location.directory 为根并使 MCP cwd 与验证根对齐", async 
     await mkdir(nested)
     const setup = createCodeGraphPlugin({}, {
       resolveRuntime: () => runtime,
+      updateRunner: async () => false,
     })
     const subdirectory = mockContext({
       location: { directory: nested, project: { canonical: root, directory: root } },
@@ -179,7 +263,7 @@ test("延迟执行的 MCP transform 完成 set 后启用已注册提示 hook，�
       mcp: { transform: async (callback) => { transformCallback = callback } },
       session: { hook: async (name, callback) => hooks.push({ name, callback }) },
     }
-    await createCodeGraphPlugin({}, { resolveRuntime: () => runtime })(ctx)
+    await createCodeGraphPlugin({}, { resolveRuntime: () => runtime, updateRunner: async () => false })(ctx)
     assert.equal(hooks.length, 1)
     assert.equal(hooks[0].name, "context")
 
@@ -210,7 +294,7 @@ test("延迟执行的 MCP transform 完成 set 后启用已注册提示 hook，�
 
 test("不安全根与用户已有 MCP 不注入、不注册提示 hook", async () => {
   const runtime = { nodePath: "/node", cliPath: "/cli", workerPath: "/worker", launcherPath: "/launcher" }
-  const setup = createCodeGraphPlugin({}, { resolveRuntime: () => runtime })
+  const setup = createCodeGraphPlugin({}, { resolveRuntime: () => runtime, updateRunner: async () => false })
   const plain = await mkdtemp(join(tmpdir(), "codegraph-bridge-skip-"))
   try {
     const unsafe = mockContext({ location: { directory: homedir() } })

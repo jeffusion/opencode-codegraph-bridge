@@ -1,6 +1,7 @@
 import { createRequire } from "node:module"
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
+import { hasVerifiedPackagePlugin, runV2AutoUpdate } from "./auto-update-v2.js"
 import { dirname, join, parse, resolve, sep } from "node:path"
 import { fileURLToPath } from "node:url"
 import { spawn } from "node:child_process"
@@ -331,11 +332,13 @@ function fallbackLog(message) {
 
 /**
  * @param {CodeGraphBridgeOptions} [options]
- * @param {{ resolveRuntime?: typeof resolveRuntime }} [dependencies]
+ * @param {{ resolveRuntime?: typeof resolveRuntime, updateRunner?: (root: string, dependencies?: object) => unknown, pluginList?: (input: { location: { directory: string } }) => Promise<unknown>, sourceCheck?: (ctx: any) => string | false | Promise<string | false> }} [dependencies]
  * @returns {(ctx: any) => Promise<void>}
  */
 export function createCodeGraphPlugin(options = {}, dependencies = {}) {
   const resolveRuntimeFn = dependencies.resolveRuntime || resolveRuntime
+  const updateRunner = dependencies.updateRunner || runV2AutoUpdate
+  let updateScheduled = false
   return async (ctx) => {
     if (ctx?.options?.enabled === false || options.enabled === false) return
 
@@ -375,6 +378,22 @@ export function createCodeGraphPlugin(options = {}, dependencies = {}) {
       editor.set("codegraph", injectedMcp)
       managed = true
     })
+
+    if (!updateScheduled && ctx?.options?.enabled !== false) {
+      updateScheduled = true
+      const sourceCheck = dependencies.sourceCheck
+        ? () => dependencies.sourceCheck(ctx)
+        : async () => {
+          const pluginApi = ctx?.plugin
+          const list = dependencies.pluginList || pluginApi?.list
+          if (typeof list !== "function") return false
+          const result = await list.call(pluginApi, { location: { directory: ctx?.location?.directory } })
+          return hasVerifiedPackagePlugin(result, ctx?.location?.directory)
+        }
+      void Promise.resolve().then(() => updateRunner(root, { sourceCheck })).catch((error) => {
+        fallbackLog(`后台更新失败：${error?.message || String(error)}`)
+      })
+    }
   }
 }
 

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import legacy from "../index.js"
 import serverPlugin from "../server.js"
+import { createCodeGraphPlugin } from "../src/internal.js"
 
 const runtime = { nodePath: "/node", cliPath: "/cli", workerPath: "/worker", launcherPath: "/launcher" }
 
@@ -37,7 +38,7 @@ test("./server 同时提供 v2 setup 和 v1 server adapter", async () => {
 
     const servers = new Map()
     const hooks = new Map()
-    await serverPlugin.setup({
+    await createCodeGraphPlugin({}, { resolveRuntime: () => runtime, updateRunner: async () => false })({
       location: { directory: root },
       options: {},
       mcp: { transform: async (callback) => callback({ get: (key) => servers.get(key), set: (key, value) => servers.set(key, value) }) },
@@ -47,7 +48,7 @@ test("./server 同时提供 v2 setup 和 v1 server adapter", async () => {
     assert.equal(v2Mcp.type, "local")
     assert.equal(v2Mcp.cwd, root)
     assert.equal(v2Mcp.disabled, false)
-    assert.equal(v2Mcp.command.at(-1).endsWith("/src/mcp-launcher.js"), true)
+    assert.equal(v2Mcp.command.at(-1), runtime.launcherPath)
     assert.deepEqual(v2Mcp.environment, { CODEGRAPH_NO_DOWNLOAD: "1" })
     assert.equal(hooks.has("context"), true)
   } finally {

@@ -33,7 +33,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "test:unit": "node --test test/unit.test.js test/update.test.js test/dual-entry.test.js test/install.test.js",
+    "test:unit": "node --test test/unit.test.js test/update.test.js test/update-v2.test.js test/update-v2-discovery.test.js test/auto-update-v2.test.js test/dual-entry.test.js test/install.test.js",
     "test:install": "node --test test/install.test.js",
     "test:integration": "node test/integration.test.js",
     "test:opencode": "node test/opencode-smoke.js"

@@ -83,7 +83,7 @@ MCP 配置键因 OpenCode 格式而异：v1 使用 `mcp.codegraph` 和 `enabled`
 
 ## 更新
 
-v1 仅在 `plugin_origins` 能提供可信且可识别的插件来源时保留自动更新；没有可信来源时会跳过更新。v2 不会自动更新。请在 OpenCode 实际使用的配置文件中手动升级本包（或使用最初安装时采用的包管理器升级），然后重启 OpenCode。
+v1 仍按来源感知方式自动更新：仅当 `plugin_origins` 提供可信且可识别的来源时才尝试更新，否则跳过。v2 自动更新仅适用于安全的 Git 根目录。插件会在后台有限范围检查当前目录的 `opencode.json`/`opencode.jsonc`、`.opencode/opencode.json`/`.opencode/opencode.jsonc`，以及用户 XDG 配置目录下的 `opencode/opencode.json`/`opencode/opencode.jsonc`；祖先目录只进行只读重复项检查。v1 和 v2 都支持本包裸名、`@latest` 或明确固定的稳定版本；版本范围、其他 tag 和预发布版本都会跳过。符合条件的 v2 条目可以是字符串，也可以是 `{ "package": "...", "options": ... }`，其他选项会保留。更新前，宿主 `plugin.list` 中的 package target 必须与待写入磁盘条目的 package spec 字符串完全一致。OpenCode 插件列表还必须确认本包是唯一的 active server 且来源为 package；本地路径来源、自动发现或无法取得插件列表时都会跳过。写入前会再次核对磁盘条目，因此等待更新期间（包括重启时）用户若修改配置，更新就会跳过。成功更新时，裸名或 `@latest` 会替换为明确固定的稳定版本。这些是保守验证，并不表示能够精确判断每个插件条目的配置来源。禁用条目、多处或冲突匹配、opaque 的 file/Git/alias spec、`OPENCODE_CONFIG*` 环境覆盖，以及损坏或符号链接文件都会跳过更新。两版差异不只是配置路径：v1 使用 `plugin` 条目（字符串或 tuple）及 `plugin_origins` API；v2 使用 `plugins` 条目（字符串或对象）及宿主 `plugin.list` API。版本查询使用公开 npm registry 的 `latest` 版本。更新只修改配置文件，需重启 OpenCode 才会生效。CLI 的 `install --format v2` 是独立的安装路径，不会改变此自动更新行为。
 
 ## 平台说明
 
