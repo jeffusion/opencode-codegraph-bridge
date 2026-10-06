@@ -1,4 +1,4 @@
-import { existsSync, lstatSync } from "node:fs"
+import { existsSync, linkSync, lstatSync, mkdtempSync, rmSync } from "node:fs"
 import { join } from "node:path"
 import {
   LOCK_NAME,
@@ -19,6 +19,7 @@ let abortController = new AbortController()
 let stopping = false
 let activeGraph = null
 let activeLockPath = null
+let activeStaging = null
 let forceExitTimer = null
 const parentWatch = setInterval(() => {
   if (!parentAlive()) {
@@ -61,6 +62,7 @@ function requestStop() {
       // The process is exiting; do the lock cleanup even if graph close fails.
     }
     if (activeLockPath) releaseInitLock(activeLockPath)
+    if (activeStaging) rmSync(activeStaging, { recursive: true, force: true })
     process.exit(2)
   }, 5_000)
 }
@@ -139,6 +141,8 @@ async function main() {
     }
 
     let graph
+    let staging = null
+    const originalDataName = process.env.CODEGRAPH_DIR
     try {
       if (stopping || !parentAlive()) {
         output({ success: false, message: "OpenCode 宿主已退出" })
@@ -174,6 +178,14 @@ async function main() {
         process.exitCode = 2
         return
       }
+      // CodeGraph.open() can heal bulk-load structures, even during a concurrent
+      // first index. Keep Codex readers away from the writer's database until
+      // indexing and verification finish. OpenCode retains its original path.
+      if (process.env.CODEGRAPH_BRIDGE_STAGE_INIT === "1") {
+        staging = mkdtempSync(join(root, ".codegraph-bridge-init-"))
+        activeStaging = staging
+        process.env.CODEGRAPH_DIR = staging.slice(root.length + 1)
+      }
       const sdk = await import("@colbymchenry/codegraph")
       // npm-sdk.js re-exports the platform CommonJS bundle. Depending on the
       // host's CJS/ESM interop, its default is either the class or that bundle.
@@ -201,6 +213,22 @@ async function main() {
         return
       }
       const ready = finalStatus.ok && isReadyStatus(finalStatus.status, root, true)
+      if (staging && ready) {
+        graph.destroy()
+        graph = null
+        activeGraph = null
+        const stagedDb = join(staging, "codegraph.db")
+        if (existsSync(`${stagedDb}-wal`) && lstatSync(`${stagedDb}-wal`).size > 0) throw new Error("首次索引 WAL 尚未关闭，未发布数据库")
+        if (originalDataName === undefined) delete process.env.CODEGRAPH_DIR
+        else process.env.CODEGRAPH_DIR = originalDataName
+        const destination = inspectCodeGraphData(root)
+        if (!destination.ok) throw new Error(destination.reason)
+        // Exclusive hard link publishes a complete database atomically. Never
+        // replace a database created by another process while we were indexing.
+        linkSync(stagedDb, destination.dbPath)
+        try { linkSync(join(staging, ".gitignore"), join(dataDir, ".gitignore")) }
+        catch (error) { if (error.code !== "EEXIST") throw error }
+      }
       output({ success: true, ready, message: ready ? "后台索引完成" : "索引完成但状态未达到可用条件" })
       if (!ready) process.exitCode = 1
     } finally {
@@ -212,6 +240,10 @@ async function main() {
       releaseInitLock(lock.lockPath)
       activeGraph = null
       activeLockPath = null
+      if (originalDataName === undefined) delete process.env.CODEGRAPH_DIR
+      else process.env.CODEGRAPH_DIR = originalDataName
+      if (staging) rmSync(staging, { recursive: true, force: true })
+      activeStaging = null
     }
   } catch (error) {
     output({ success: false, message: `${message(error)}；不会删除或重建已有数据库` })

@@ -1,10 +1,13 @@
 import { createRequire } from "node:module"
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs"
-import { homedir } from "node:os"
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { hasVerifiedPackagePlugin, runV2AutoUpdate } from "./auto-update-v2.js"
-import { dirname, join, parse, resolve, sep } from "node:path"
+import { dirname, join, parse } from "node:path"
 import { fileURLToPath } from "node:url"
 import { spawn } from "node:child_process"
+
+import { normalizeProjectRoot, normalizeRealpath } from "./project.mjs"
+import { SYSTEM_PROMPT } from "./guidance.mjs"
+export { normalizeProjectRoot } from "./project.mjs"
 
 const require = createRequire(import.meta.url)
 const LOCK_NAME = ".opencode-codegraph-auto.init.lock"
@@ -34,74 +37,6 @@ export function resolveRuntime() {
     workerPath: realpathSync(join(dirname(fileURLToPath(import.meta.url)), "worker.js")),
     launcherPath: realpathSync(join(dirname(fileURLToPath(import.meta.url)), "mcp-launcher.js")),
   }
-}
-
-/** @param {string} value */
-function normalizeRealpath(value) {
-  try {
-    return realpathSync(resolve(value))
-  } catch {
-    return null
-  }
-}
-
-/**
- * OpenCode supplies project roots already, so this intentionally does not walk
- * ancestors or scan a workspace. A root without .git is not indexed.
- *
- * @param {string | undefined | null} directory
- * @param {string | undefined | null} worktree
- * @returns {{ root: string } | { root: null, reason: string }}
- */
-export function normalizeProjectRoot(directory, worktree) {
-  const candidate = typeof worktree === "string" && worktree ? worktree : directory
-  if (typeof candidate !== "string" || !candidate) {
-    return { root: null, reason: "OpenCode 未提供项目目录" }
-  }
-  const root = normalizeRealpath(candidate)
-  if (!root || !statIsDirectory(root)) {
-    return { root: null, reason: "项目目录不存在或不可读" }
-  }
-  const unsafe = unsafeRootReason(root)
-  if (unsafe) return { root: null, reason: `项目根目录过宽（${unsafe}）` }
-  if (!isGitRoot(root)) {
-    return { root: null, reason: "项目根目录不是 Git 根或 worktree（缺少 .git）" }
-  }
-  return { root }
-}
-
-/** @param {string} value */
-function statIsDirectory(value) {
-  try {
-    return statSync(value).isDirectory()
-  } catch {
-    return false
-  }
-}
-
-/** @param {string} root */
-function isGitRoot(root) {
-  try {
-    const git = lstatSync(join(root, ".git"))
-    return git.isDirectory() || git.isFile()
-  } catch {
-    return false
-  }
-}
-
-/** @param {string} root */
-function unsafeRootReason(root) {
-  const filesystemRoot = parse(root).root
-  if (root === filesystemRoot) return "文件系统根目录"
-  const home = normalizeRealpath(homedir()) || resolve(homedir())
-  const same = process.platform === "win32" || process.platform === "darwin"
-    ? (value) => value.toLowerCase()
-    : (value) => value
-  const r = same(root)
-  const h = same(home)
-  if (r === h) return "用户 home 目录"
-  if (h.startsWith(`${r}${sep}`)) return "用户 home 的祖先目录"
-  return null
 }
 
 /** @param {string} root */
@@ -363,7 +298,7 @@ export function createCodeGraphPlugin(options = {}, dependencies = {}) {
       if (!managed) return
       event.system.push({
         type: "text",
-        text: "When CodeGraph tools are available in this session, use their exploration capability first to locate and understand relevant code before broad searches or reading unrelated files. Follow their provided instructions and use returned context for targeted reads; avoid re-fetching context already available. If the tools are unavailable or results are insufficient or stale, fall back to permitted file-reading and search tools.",
+        text: SYSTEM_PROMPT,
       })
     })
 

@@ -12,7 +12,7 @@ const { name: PACKAGE_NAME, version: PACKAGE_VERSION } = require("../package.jso
 const SCHEMA = "https://opencode.ai/config.json"
 
 function usage() {
-  return "Usage: npx opencode-codegraph-bridge install [--format v1|v2]\n\nRegister this package in your global OpenCode config.\nNew configs default to v1 (plugin array) for compatibility; use --format v2 for the plugins array."
+  return "Usage: npx opencode-codegraph-bridge install [--host opencode|codex] [--format v1|v2]\n       opencode-codegraph-bridge mcp --host codex [--project DIR]\n       opencode-codegraph-bridge package-codex --output DIR\n\nInstall defaults to OpenCode v1. Codex installation uses the official plugin CLI."
 }
 
 /** @param {NodeJS.ProcessEnv} env */
@@ -125,13 +125,13 @@ export async function run(options = {}) {
   const stderr = options.stderr || process.stderr
   let parsed
   try {
-    parsed = parseArgs({ args, options: { help: { type: "boolean", short: "h" }, version: { type: "boolean", short: "v" }, format: { type: "string" } }, allowPositionals: true, strict: false, tokens: true })
+    parsed = parseArgs({ args, options: { help: { type: "boolean", short: "h" }, version: { type: "boolean", short: "v" }, format: { type: "string" }, host: { type: "string" }, project: { type: "string" }, output: { type: "string" } }, allowPositionals: true, strict: false, tokens: true })
   } catch {
     stderr.write(`${usage()}\n`)
     return 1
   }
-  if (parsed.tokens.some((token) => token.kind === "option" && !["help", "version", "format"].includes(token.name)) ||
-    parsed.positionals.some((value) => value !== "install") || parsed.positionals.length > 1) {
+  if (parsed.tokens.some((token) => token.kind === "option" && !["help", "version", "format", "host", "project", "output"].includes(token.name)) ||
+    parsed.positionals.some((value) => !["install", "mcp", "package-codex"].includes(value)) || parsed.positionals.length > 1) {
     stderr.write(`${usage()}\n`)
     return 1
   }
@@ -143,16 +143,37 @@ export async function run(options = {}) {
     stdout.write(`${PACKAGE_VERSION}\n`)
     return 0
   }
-  if (parsed.positionals[0] !== "install") {
+  if (!parsed.positionals.length) {
     stderr.write(`${usage()}\n`)
     return 1
   }
+  const command = parsed.positionals[0]
+  const host = parsed.values.host || "opencode"
   const requestedFormat = parsed.values.format
-  if (requestedFormat !== undefined && requestedFormat !== "v1" && requestedFormat !== "v2") {
-    stderr.write("--format must be v1 or v2.\n")
+  const allowed = command === "install" ? ["host", "format"] : command === "mcp" ? ["host", "project"] : ["output"]
+  if (parsed.tokens.some((token) => token.kind === "option" && !["help", "version", ...allowed].includes(token.name)) ||
+      !["opencode", "codex"].includes(host) ||
+      (requestedFormat !== undefined && (host === "codex" || !["v1", "v2"].includes(requestedFormat))) ||
+      (command === "mcp" && parsed.values.host !== "codex")) {
+    stderr.write(`Invalid options. --format must be v1 or v2 and is only supported for OpenCode.\n${usage()}\n`)
     return 1
   }
   try {
+    if (command === "package-codex") {
+      const { packageCodex } = await import("./codex-plugin.js")
+      stdout.write(`Generated Codex marketplace: ${await packageCodex(parsed.values.output)}\n`)
+      return 0
+    }
+    if (command === "mcp") {
+      const { runCodexMcp } = await import("./codex-mcp.js")
+      return await runCodexMcp({ project: parsed.values.project, env: options.env, stdout, stderr })
+    }
+    if (host === "codex") {
+      const { installCodex } = await import("./codex-plugin.js")
+      const result = await installCodex({ env: options.env })
+      stdout.write(`${result.changed ? "Installed" : "Already installed"} codegraph-bridge@${result.version}.${result.disabled ? " It remains disabled." : " Restart Codex; review the plugin command hooks once in /hooks to allow session guidance."}\n`)
+      return 0
+    }
     const directory = await ensureSafeDirectory(configDirectory(options.env || process.env))
     if (!directory) throw new Error("OpenCode config directory is unsafe.")
     const result = await withConfigLock(directory, async () => {

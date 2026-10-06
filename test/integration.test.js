@@ -79,6 +79,15 @@ function notification(connection, method, params) {
 async function waitForReady(runtime, root) {
   const deadline = Date.now() + 10 * 60_000
   while (Date.now() < deadline) {
+    // CodeGraph status opens/maintains SQLite. Opening it during a bulk first
+    // index can heal in-flight structures and disrupt the writer (1.6.0).
+    // Observe our lock before inspecting readiness; don't mutate the fixture
+    // while the initialization worker owns it.
+    try {
+      await lstat(join(codeGraphDataDir(root), LOCK_NAME))
+      await new Promise((resolve) => setTimeout(resolve, 2_000))
+      continue
+    } catch (error) { if (error.code !== "ENOENT") throw error }
     const result = await readStatus(runtime, root, 30_000)
     if (result.ok && isReadyStatus(result.status, root, true)) return
     await new Promise((resolve) => setTimeout(resolve, 2_000))

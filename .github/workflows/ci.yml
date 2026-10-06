@@ -46,5 +46,23 @@ jobs:
         run: npm run test:opencode
         env:
           OPENCODE_BIN: opencode2
+      - name: Install pinned official Codex CLI
+        run: npm --prefix /tmp/codex-cli install --no-save @openai/codex@0.160.0
+      - name: Codex integration tests
+        run: npm run test:codex
+        env:
+          CODEX_TEST_BINARY: /tmp/codex-cli/node_modules/.bin/codex
+      - name: Codex packed artifact and hook tests
+        run: npm run test:codex:pack
+        env:
+          CODEX_TEST_BINARY: /tmp/codex-cli/node_modules/.bin/codex
+      - name: Generate native Codex marketplace
+        run: node src/cli.js package-codex --output /tmp/codegraph-codex-marketplace
+      - name: Upload native Codex marketplace
+        uses: actions/upload-artifact@v4
+        with:
+          name: codegraph-codex-marketplace
+          path: /tmp/codegraph-codex-marketplace
+          include-hidden-files: true
       - name: Package dry run
         run: npm pack --dry-run

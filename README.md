@@ -1,6 +1,6 @@
-# CodeGraph Bridge for OpenCode
+# CodeGraph Bridge for OpenCode and Codex
 
-Use CodeGraph's structural code exploration in OpenCode without manually wiring an MCP server or running the first index. This package supports both OpenCode v1 and v2 configuration formats.
+Use CodeGraph's structural code exploration in OpenCode without manually wiring an MCP server or running the first index. This package supports OpenCode v1/v2 formats and native Codex plugins.
 
 [中文](https://github.com/jeffusion/opencode-codegraph-bridge/blob/main/README.zh-CN.md)
 
@@ -34,6 +34,40 @@ npx opencode-codegraph-bridge install --format v2
 ```
 
 The installer writes the exact package version for this invocation to the standard global OpenCode config directory (`$XDG_CONFIG_HOME/opencode`, or `~/.config/opencode`). It preserves the existing configuration format; if the requested format conflicts with the existing configuration, installation stops and you must resolve the conflict manually. It does not change `AGENTS.md` or MCP configuration.
+
+## Codex installation and usage
+
+Have Node.js, npm/npx, Git and the official Codex CLI on PATH. Linux validation uses Codex **0.160.0**:
+
+```sh
+npx opencode-codegraph-bridge install --host codex
+```
+
+The installer generates a versioned local marketplace under `${CODEX_HOME:-~/.codex}/codegraph-bridge/marketplace`, registers it using official `codex plugin marketplace add` and `codex plugin add` commands, then verifies the installed source, version and enabled state. It never directly edits user `config.toml`, `hooks.json` or `AGENTS.md`. Same-version installation performs no writes; newer versions are retained and disabled plugins stay disabled. Conflicting marketplace/plugin sources are preserved and installation stops. Rerun this command with the desired bridge package version to update.
+
+Restart Codex and review/trust the plugin command hooks in CLI `/hooks` to enable automatic guidance. Codex requires review of the exact hook definition; installation does not automatically trust hooks, and changed definitions may require review again. The installer does not bypass this requirement. See the [official hooks documentation](https://learn.chatgpt.com/docs/hooks).
+
+Guidance enters developer context through `SessionStart` (startup/resume/clear/compact) and `SubagentStart` `additionalContext`. The plugin also includes a `codegraph-exploration` skill. Guidance acknowledges background indexing and falls back to permitted file reads/searches when tools or results are unavailable.
+
+The native MCP key is `codegraph_bridge`. It runs a fixed bridge version through `npx --yes --prefer-offline`, with a 120-second startup timeout and `required: false`. CodeGraph remains a **`^1.6.0`** dependency, so fresh npm caches may resolve different versions within that range. The first startup needs npm access for the package and platform dependencies; later startups reuse npm's cache. The session cwd is resolved through Git to a safe repository root, including subdirectories and worktrees. Non-Git directories are not indexed. EOF/SIGTERM/SIGINT clean up the bridge's own launcher and initialization worker; CodeGraph manages shared daemon lifetime.
+
+Existing manual CodeGraph MCP entries remain untouched. If duplicate tools appear, disable one server in Codex's MCP controls. Guidance recommends consistently using one CodeGraph server.
+
+Advanced stdio entry (protocol-only stdout, diagnostics on stderr):
+
+```sh
+opencode-codegraph-bridge mcp --host codex --project /path/to/repository
+```
+
+Generate a movable native marketplace without installing it:
+
+```sh
+node src/cli.js package-codex --output /tmp/codegraph-codex-marketplace
+```
+
+The output directory must be absent or empty. Hook scripts are self-contained and independent of npm cache paths. The generated MCP still fetches the matching bridge version from npm; pre-release tests use a local registry serving the newly packed tarball, never an older published package with the same version. Uninstall using `codex plugin remove codegraph-bridge@codegraph-bridge`, optionally followed by `codex plugin marketplace remove codegraph-bridge`. Generated local files remain available for inspection.
+
+Automated runtime tests cover CLI/app-server loading, MCP calls and actual SessionStart developer context. Unit tests cover resume/clear/compact and SubagentStart output contracts; those events have not each been validated in a real host. Desktop and IDE support depends on their bundled Codex native plugin support; their UI runtime validation is still pending.
 
 ## Configuration
 
@@ -102,6 +136,7 @@ CodeGraph's platform-specific runtime is resolved from this package's dependency
 git clone https://github.com/jeffusion/opencode-codegraph-bridge.git
 cd opencode-codegraph-bridge && npm ci
 npm run test:unit && npm run test:integration && npm run test:opencode
+npm run test:codex && npm run test:codex:pack
 ```
 
 For local development, use the entry form for the OpenCode configuration format in use. In v1, point the plugin entry to `./src/index.js` or the package-root `index.js`. In v2, point `package` at the absolute package directory containing `server.js`. Retain other plugins.
