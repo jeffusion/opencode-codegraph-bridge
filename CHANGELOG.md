@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/jeffusion/opencode-codegraph-bridge/compare/v0.6.1...v0.7.0) (2026-10-06)
+
+
+### Features
+
+* **codex:** add native CodeGraph plugin support ([21c8ad6](https://github.com/jeffusion/opencode-codegraph-bridge/commit/21c8ad6369c7331e2a751b418567d54cc4304e6d))
+
 ## [0.6.1](https://github.com/jeffusion/opencode-codegraph-bridge/compare/v0.6.0...v0.6.1) (2026-09-24)
 
 
