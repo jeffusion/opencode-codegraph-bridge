@@ -1,7 +1,7 @@
 import { normalizeProjectRoot, resolveRuntime } from "./internal.js"
 import { updatePluginVersion } from "./update.js"
 
-const SYSTEM_PROMPT = "When CodeGraph tools are available in this session, use their exploration capability first to locate and understand relevant code before broad searches or reading unrelated files. Follow their provided instructions and use returned context for targeted reads; avoid re-fetching context already available. If the tools are unavailable or results are insufficient or stale, fall back to permitted file-reading and search tools."
+import { SYSTEM_PROMPT } from "./guidance.mjs"
 
 function fallbackLog(message) {
   console.error(`[opencode-codegraph-bridge] ${message}`)

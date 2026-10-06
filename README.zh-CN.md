@@ -1,6 +1,6 @@
-# CodeGraph Bridge for OpenCode
+# CodeGraph Bridge for OpenCode and Codex
 
-无需手工配置 MCP 服务或执行首次索引，即可在 OpenCode 中使用 CodeGraph 的结构化代码探索能力。本包支持 OpenCode v1 和 v2 配置格式。
+无需手工配置 MCP 服务或执行首次索引，即可在 OpenCode 中使用 CodeGraph 的结构化代码探索能力。本包支持 OpenCode v1、v2 配置格式，以及 Codex 原生插件。
 
 [English](https://github.com/jeffusion/opencode-codegraph-bridge/blob/main/README.md)
 
@@ -34,6 +34,40 @@ npx opencode-codegraph-bridge install --format v2
 ```
 
 安装器会将本次运行包的精确版本写入标准全局 OpenCode 配置目录（`$XDG_CONFIG_HOME/opencode`，或 `~/.config/opencode`），并保留现有配置格式。如果请求的格式与现有配置冲突，安装会停止，需手工确认并解决冲突，不会自动转换或覆盖。安装器不会修改 `AGENTS.md` 或 MCP 配置。
+
+## Codex 安装与使用
+
+需要 PATH 中可用的 Node.js、npm/npx、Git 和官方 Codex CLI；Linux 上以 Codex **0.160.0** 验证。执行一次：
+
+```sh
+npx opencode-codegraph-bridge install --host codex
+```
+
+安装器在 `${CODEX_HOME:-~/.codex}/codegraph-bridge/marketplace` 生成版本化的本地插件，调用官方 `codex plugin marketplace add` 和 `codex plugin add` 注册，再核对来源、版本和启用状态。它不直接编辑 `config.toml`、`hooks.json` 或 `AGENTS.md`。同版重复执行不写入；已有较高版本不降级，已禁用插件不重新启用。同名但不同来源的插件或 marketplace 会停止安装，保留原内容。更新使用同一条命令，bridge 版本来自本次运行的包版本。
+
+安装后重启 Codex。在 CLI 的 `/hooks` 中审核并信任插件命令 hook，即可启用自动提示。Codex 要求审核具体 hook 定义；安装或启用插件不会自动信任 hook，定义变化后也可能需要重新审核。安装器不会绕过这项要求。参考[官方 Hook 文档](https://learn.chatgpt.com/docs/hooks)。
+
+Codex 的提示通过 `SessionStart`（startup、resume、clear、compact）和 `SubagentStart` 的 `additionalContext` 加入 developer context；与 OpenCode 的 system hook 接口不同。插件同时提供 `codegraph-exploration` skill。提示明确说明首次索引在后台进行，工具出现并不代表索引已就绪，结果不足时应继续使用允许的文件读取和搜索工具。
+
+原生 MCP 使用独立键 `codegraph_bridge`，以固定 bridge 版本的 `npx --yes --prefer-offline` 启动。本包仍保留 CodeGraph **`^1.6.0`** 范围依赖；新 npm 缓存可能解析出范围内不同的 CodeGraph 版本。首次启动需要访问 npm 获取包及平台依赖，随后复用 npm 缓存；启动超时为 120 秒，失败不阻止 Codex 会话。Codex 会话 cwd 通过 Git 解析到安全仓库根目录，支持子目录及 worktree；在非 Git 目录不会索引。EOF、SIGTERM、SIGINT 会清理 bridge 自己的 launcher 和初始化 worker，共享 CodeGraph daemon 由 CodeGraph 自行管理。
+
+已有手工配置的 CodeGraph MCP 会保留。若出现重复工具，可在 Codex 的 MCP 管理界面禁用其中一个；插件不会接管或删掉既有服务。提示建议一致使用一个 CodeGraph 服务。
+
+高级用法：直接启动 stdio MCP（stdout 仅包含协议消息，诊断写 stderr）：
+
+```sh
+opencode-codegraph-bridge mcp --host codex --project /path/to/repository
+```
+
+只生成可搬移的 marketplace，不安装：
+
+```sh
+node src/cli.js package-codex --output /tmp/codegraph-codex-marketplace
+```
+
+输出目录须不存在或为空，插件的提示脚本自包含，不依赖 npm 缓存位置。生成后的 MCP 仍通过 npm 获取对应 bridge 版本，因此发版前使用本地 registry 的打包测试；不要以 npm 上的同号旧包验证未发布代码。删除安装请使用 `codex plugin remove codegraph-bridge@codegraph-bridge`；需要时再使用 `codex plugin marketplace remove codegraph-bridge`。本地生成文件保留供检查。
+
+CLI 与 app-server 的真实加载、MCP 调用及 SessionStart developer context 已有自动化测试；resume/clear/compact 与 SubagentStart 的输出契约有单元覆盖，尚未逐项进行真实宿主端验证。桌面端与 IDE 依赖各自内置 Codex 的原生插件能力，本项目尚未完成这些界面的运行验证。
 
 ## 配置
 
@@ -102,6 +136,7 @@ CodeGraph 的平台运行时从本包依赖树中解析。本 bridge 已在 Linu
 git clone https://github.com/jeffusion/opencode-codegraph-bridge.git
 cd opencode-codegraph-bridge && npm ci
 npm run test:unit && npm run test:integration && npm run test:opencode
+npm run test:codex && npm run test:codex:pack
 ```
 
 本地开发时，根据 OpenCode 配置格式选择入口。v1 插件入口可指向 `./src/index.js` 或包根目录的 `index.js`。v2 的 `package` 指向包含 `server.js` 的包目录。请保留其他插件。

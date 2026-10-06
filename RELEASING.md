@@ -52,3 +52,15 @@ gh workflow run ci.yml --ref <发版分支>
 不要声称 bot PR 已通过 CI；发布 job 仍会执行完整 `npm ci`、unit、integration 和 pack 检查。若 publish job 已实际失败，应在同一次 workflow 中只重新运行失败的 publish job，而不是重新运行整轮 Release Please：整轮重跑可能得到 `release_created=false`，导致 publish job 被跳过。若 npm 已接受该版本，不能靠重跑绕过不可变版本规则。
 
 Release Please workflow 使用 `push main` 和 `workflow_dispatch`，不使用 `release.published` 触发；publish 只在 Release Please 成功创建稳定 release 且 `NPM_PUBLISH_ENABLED=true` 时运行。
+
+## Codex 原生插件产物
+
+Codex manifest、marketplace 和固定 bridge 版本的 MCP 命令从 `package.json` 动态生成，不维护第二份手工版本号。CodeGraph 依赖范围仍为 `^1.6.0`，不在该发布流程中改为固定版本。CI 和 npm publish job 增加 Codex 0.160.0 的真实集成、`npm pack` 本地 registry 全链路与 Hook developer context 验证。测试使用隔离配置和本地模拟模型，不需要账号或付费模型。
+
+生成产物：
+
+```sh
+node src/cli.js package-codex --output /tmp/codegraph-codex-marketplace
+```
+
+workflow 将整个 marketplace 上传为 Actions artifact，包含隐藏的 `.agents`、`.codex-plugin`、`.mcp.json`；版本与 release tag 对应的包版本一致。首次发布 Codex 支持之前，公开 npm 上的旧 bridge 版本无法运行新入口，因此务必先通过 `npm run test:codex:pack`。现有 Release Please 审核和 npm 发布授权保持原流程，本次开发不执行发布。

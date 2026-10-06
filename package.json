@@ -1,7 +1,7 @@
 {
   "name": "opencode-codegraph-bridge",
   "version": "0.6.1",
-  "description": "CodeGraph Bridge for OpenCode：自动注册、后台索引与动态提示插件",
+  "description": "CodeGraph Bridge for OpenCode and Codex: automatic setup, background indexing and session guidance",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -33,10 +33,12 @@
     "LICENSE"
   ],
   "scripts": {
-    "test:unit": "node --test test/unit.test.js test/update.test.js test/update-v2.test.js test/update-v2-discovery.test.js test/auto-update-v2.test.js test/dual-entry.test.js test/install.test.js",
+    "test:unit": "node --test test/unit.test.js test/update.test.js test/update-v2.test.js test/update-v2-discovery.test.js test/auto-update-v2.test.js test/dual-entry.test.js test/install.test.js test/codex.test.mjs",
     "test:install": "node --test test/install.test.js",
     "test:integration": "node test/integration.test.js",
-    "test:opencode": "node test/opencode-smoke.js"
+    "test:opencode": "node test/opencode-smoke.js",
+    "test:codex": "node --test test/codex-integration.test.mjs",
+    "test:codex:pack": "node --test test/codex-pack.test.mjs"
   },
   "dependencies": {
     "@colbymchenry/codegraph": "^1.6.0",
