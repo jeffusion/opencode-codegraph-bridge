@@ -1,6 +1,6 @@
 {
   "name": "opencode-codegraph-bridge",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "description": "CodeGraph Bridge for OpenCode and Codex: automatic setup, background indexing and session guidance",
   "license": "MIT",
   "repository": {
