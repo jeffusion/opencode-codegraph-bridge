@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/jeffusion/opencode-codegraph-bridge/compare/v0.7.0...v0.7.1) (2026-10-07)
+
+
+### Bug Fixes
+
+* **codex:** isolate npm resolution for MCP startup ([bc7ca32](https://github.com/jeffusion/opencode-codegraph-bridge/commit/bc7ca324724d337731c26cc6be40e0e880573593))
+
 ## [0.7.0](https://github.com/jeffusion/opencode-codegraph-bridge/compare/v0.6.1...v0.7.0) (2026-10-06)
 
 
