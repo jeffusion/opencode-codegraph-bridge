@@ -49,7 +49,7 @@ Restart Codex and review/trust the plugin command hooks in CLI `/hooks` to enabl
 
 Guidance enters developer context through `SessionStart` (startup/resume/clear/compact) and `SubagentStart` `additionalContext`. The plugin also includes a `codegraph-exploration` skill. Guidance acknowledges background indexing and falls back to permitted file reads/searches when tools or results are unavailable.
 
-The native MCP key is `codegraph_bridge`. It runs a fixed bridge version through `npx --yes --prefer-offline`, with a 120-second startup timeout and `required: false`. CodeGraph remains a **`^1.6.0`** dependency, so fresh npm caches may resolve different versions within that range. The first startup needs npm access for the package and platform dependencies; later startups reuse npm's cache. The session cwd is resolved through Git to a safe repository root, including subdirectories and worktrees. Non-Git directories are not indexed. EOF/SIGTERM/SIGINT clean up the bridge's own launcher and initialization worker; CodeGraph manages shared daemon lifetime.
+The native MCP key is `codegraph_bridge`. A self-contained Node bootstrap runs a fixed bridge version through `npx --yes --prefer-offline`, with a 120-second startup timeout and `required: false`. It creates a separate temporary npm prefix while retaining the session cwd, so npm cannot mistake a same-name/version source checkout for an installed package. It does not require Codex to expand plugin path variables in MCP arguments. CodeGraph remains a **`^1.6.0`** dependency, so fresh npm caches may resolve different versions within that range. The first startup needs npm access for the package and platform dependencies; later startups reuse npm's cache. The session cwd is resolved through Git to a safe repository root, including subdirectories and worktrees. Non-Git directories are not indexed. EOF/SIGTERM/SIGINT clean up the temporary prefix and the bridge's own npm processes, launcher and initialization worker; CodeGraph manages shared daemon lifetime.
 
 Existing manual CodeGraph MCP entries remain untouched. If duplicate tools appear, disable one server in Codex's MCP controls. Guidance recommends consistently using one CodeGraph server.
 
@@ -129,6 +129,8 @@ CodeGraph's platform-specific runtime is resolved from this package's dependency
 | --- | --- |
 | No CodeGraph MCP tools | Open the Git project root in OpenCode; an existing `mcp.servers.codegraph` (v2) or `mcp.codegraph` (v1) entry deliberately takes precedence; then check OpenCode logs for a missing CodeGraph dependency. |
 | npm mirror returns 404 | Inspect `npm config get registry`, then diagnose the official package explicitly with `npm view opencode-codegraph-bridge version --registry=https://registry.npmjs.org/`. Change your registry only if you intend to. |
+| Missing command or exit 127 inside a bridge source worktree | Old launch configurations can mistake the same-name/version checkout for an installed package without a local executable. Use a plugin version with the isolated npm prefix bootstrap. |
+| Codex rejects `.codegraph` as a symbolic link | This is the data-directory safety check. Preserve the link and set `CODEGRAPH_DIR=.codegraph-bridge` in the bridge MCP environment to use a real project-local directory with its own index. |
 
 ## Development
 

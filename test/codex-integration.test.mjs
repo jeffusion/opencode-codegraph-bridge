@@ -114,11 +114,11 @@ test("共享 daemon: 两个 CLI 客户端，关闭一个另一个继续 ping/exp
   }
 }))
 
-test("官方 codex CLI 0.160.0: 临时 CODEX_HOME 安装、list、重复同版零写、禁用不重新启用", { timeout: 120_000 }, async (t) => fixture(async (tmp) => {
+test("官方 codex CLI 0.160.0/0.160.1: 临时 CODEX_HOME 安装、list、重复同版零写、禁用不重新启用", { timeout: 120_000 }, async (t) => fixture(async (tmp) => {
   const codex = process.env.CODEX_TEST_BINARY || "codex"
   let version
   try { version = (await execute(codex, ["--version"])).stdout.trim() } catch { t.skip("official Codex CLI unavailable"); return }
-  assert.match(version, /^codex-cli 0\.160\.0$/)
+  assert.match(version, /^codex-cli 0\.160\.[01]$/)
   const env = { ...process.env, CODEX_HOME: join(tmp, "home") }
   const first = await installCodex({ env, codex })
   assert.equal(first.changed, true)

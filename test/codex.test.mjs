@@ -11,6 +11,7 @@ import { resolveCodexProjectRoot } from "../src/project.mjs"
 import { contextForEvent, runHook } from "../src/codex-hook.mjs"
 import { CODEX_PROMPT } from "../src/guidance.mjs"
 import { installCodex, packageCodex, pluginFiles, PLUGIN_ID } from "../src/codex-plugin.js"
+import { absent, descendants, gone, rpc, until } from "./codex-test-support.mjs"
 
 const pkg = createRequire(import.meta.url)("../package.json")
 const hash = (data) => createHash("sha256").update(data).digest("hex")
@@ -117,8 +118,9 @@ test("原生插件固定当前精确版本、保留 CodeGraph 依赖且可独立
   assert.equal(manifest.version, pkg.version)
   assert.equal(manifest.skills, "./skills/")
   const mcp = JSON.parse(files[".mcp.json"]).mcpServers.codegraph_bridge
-  assert.equal(mcp.command, "npx")
-  assert.deepEqual(mcp.args.slice(-4), [`${pkg.name}@${pkg.version}`, "mcp", "--host", "codex"])
+  assert.equal(mcp.command, "node")
+  assert.deepEqual(mcp.args.slice(0, 2), ["--input-type=module", "--eval"])
+  assert.ok(mcp.args[2].includes(`runNpxMcp("${pkg.name}@${pkg.version}")`))
   assert.equal(mcp.env.CODEGRAPH_NO_DOWNLOAD, "1")
   const target = join(root, "market")
   await packageCodex(target)
@@ -143,6 +145,42 @@ test("首次安装通过官方命令，重复同版文件及目录零写", async
   assert.deepEqual(await state.install(), { changed: false, disabled: false, version: pkg.version, store: state.store })
   assert.deepEqual(await tree(state.store), before)
   assert.ok(state.calls.every((call) => !call.includes("add")))
+}))
+
+for (const mode of ["EOF", "SIGTERM", "SIGINT"]) test(`生成的 npm bootstrap: 保留项目 cwd、独立 prefix、${mode} 清理`, { skip: process.platform !== "linux", timeout: 30_000 }, async () => temporary(async (root) => {
+  const bin = join(root, "bin with spaces")
+  const project = await git(join(root, "project with spaces"))
+  await mkdir(bin)
+  await writeFile(join(bin, "npx"), `#!/usr/bin/env node
+const { spawn } = require("node:child_process")
+const { createInterface } = require("node:readline")
+// Observe group cleanup beyond the npm leader, without a registry or daemon.
+spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" })
+createInterface({ input: process.stdin }).on("line", line => {
+  const message = JSON.parse(line)
+  process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { cwd: process.cwd(), args: process.argv.slice(2) } }) + "\\n")
+})
+`, { mode: 0o755 })
+  const generated = JSON.parse((await pluginFiles())[".mcp.json"]).mcpServers.codegraph_bridge
+  const client = rpc(generated.command, generated.args, { cwd: project, env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } })
+  let prefix
+  try {
+    const result = await client.request("probe", {})
+    assert.equal(result.cwd, project)
+    assert.equal(result.args[0], "--prefix")
+    prefix = result.args[1]
+    assert.notEqual(prefix, project)
+    assert.deepEqual(await readdir(prefix), [])
+    assert.deepEqual(result.args.slice(2), ["--yes", "--prefer-offline", `${pkg.name}@${pkg.version}`, "mcp", "--host", "codex"])
+    await until(async () => (await descendants(client.child.pid)).length >= 3, "stub worker not observed")
+    const owned = (await descendants(client.child.pid)).map(row => row.pid)
+    if (mode === "EOF") client.child.stdin.end()
+    else process.kill(client.child.pid, mode)
+    await until(() => client.child.exitCode !== null || client.child.signalCode !== null, "bootstrap leader did not stop", 20_000)
+    assert.equal((await client.closed).code, mode === "EOF" ? 0 : mode === "SIGTERM" ? 143 : 130)
+    await until(() => gone(owned), "bootstrap left running descendants", 10_000)
+    assert.equal(await absent(prefix), true)
+  } finally { await client.cleanup() }
 }))
 
 test("禁用插件保持禁用；已装更高版本不降级且零写", async () => temporary(async (root) => {

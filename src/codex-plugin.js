@@ -18,12 +18,15 @@ const json = (value) => `${JSON.stringify(value, null, 2)}\n`
 const digest = (value) => createHash("sha256").update(value).digest("hex")
 
 export async function pluginFiles() {
+  // Keep the bootstrap self-contained. Legacy Codex passes path variables in
+  // MCP args literally, and setting MCP cwd to the plugin loses the project.
+  const bootstrap = `${await readFile(join(source, "codex-bootstrap.mjs"), "utf8")}\nprocess.exitCode = await runNpxMcp(${JSON.stringify(`${pkg.name}@${pkg.version}`)})\n`
   const files = {
     ".codex-plugin/plugin.json": json({ name: PLUGIN_NAME, version: pkg.version,
       description: "CodeGraph structural exploration, background indexing and session guidance",
       skills: "./skills/", mcpServers: "./.mcp.json", hooks: "./hooks/hooks.json" }),
     ".mcp.json": json({ mcpServers: { codegraph_bridge: {
-      command: "npx", args: ["--yes", "--prefer-offline", `${pkg.name}@${pkg.version}`, "mcp", "--host", "codex"],
+      command: "node", args: ["--input-type=module", "--eval", bootstrap],
       env: { CODEGRAPH_NO_DOWNLOAD: "1" }, startup_timeout_sec: 120, required: false,
     } } }),
     "hooks/hooks.json": json({ hooks: {

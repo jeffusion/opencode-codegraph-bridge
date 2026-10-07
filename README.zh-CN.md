@@ -49,7 +49,7 @@ npx opencode-codegraph-bridge install --host codex
 
 Codex 的提示通过 `SessionStart`（startup、resume、clear、compact）和 `SubagentStart` 的 `additionalContext` 加入 developer context；与 OpenCode 的 system hook 接口不同。插件同时提供 `codegraph-exploration` skill。提示明确说明首次索引在后台进行，工具出现并不代表索引已就绪，结果不足时应继续使用允许的文件读取和搜索工具。
 
-原生 MCP 使用独立键 `codegraph_bridge`，以固定 bridge 版本的 `npx --yes --prefer-offline` 启动。本包仍保留 CodeGraph **`^1.6.0`** 范围依赖；新 npm 缓存可能解析出范围内不同的 CodeGraph 版本。首次启动需要访问 npm 获取包及平台依赖，随后复用 npm 缓存；启动超时为 120 秒，失败不阻止 Codex 会话。Codex 会话 cwd 通过 Git 解析到安全仓库根目录，支持子目录及 worktree；在非 Git 目录不会索引。EOF、SIGTERM、SIGINT 会清理 bridge 自己的 launcher 和初始化 worker，共享 CodeGraph daemon 由 CodeGraph 自行管理。
+原生 MCP 使用独立键 `codegraph_bridge`，由自包含的 Node 启动代码调用固定 bridge 版本的 `npx --yes --prefer-offline`。启动代码为 npm 创建独立的临时 prefix，保留会话 cwd，避免 npm 把同名同版本的源码仓库误认为已安装包；它不依赖 Codex 展开 MCP 参数中的插件路径变量。本包仍保留 CodeGraph **`^1.6.0`** 范围依赖；新 npm 缓存可能解析出范围内不同的 CodeGraph 版本。首次启动需要访问 npm 获取包及平台依赖，随后复用 npm 缓存；启动超时为 120 秒，失败不阻止 Codex 会话。Codex 会话 cwd 通过 Git 解析到安全仓库根目录，支持子目录及 worktree；在非 Git 目录不会索引。EOF、SIGTERM、SIGINT 会清理临时 prefix 和 bridge 自己的 npm 子进程、launcher、初始化 worker，共享 CodeGraph daemon 由 CodeGraph 自行管理。
 
 已有手工配置的 CodeGraph MCP 会保留。若出现重复工具，可在 Codex 的 MCP 管理界面禁用其中一个；插件不会接管或删掉既有服务。提示建议一致使用一个 CodeGraph 服务。
 
@@ -129,6 +129,8 @@ CodeGraph 的平台运行时从本包依赖树中解析。本 bridge 已在 Linu
 | --- | --- |
 | 没有 CodeGraph MCP 工具 | 在 OpenCode 中打开 Git 项目根目录；已有 `mcp.servers.codegraph`（v2）或 `mcp.codegraph`（v1）会按设计优先；再查看 OpenCode 日志是否提示 CodeGraph 依赖缺失。 |
 | npm 镜像返回 404 | 先运行 `npm config get registry`，再用 `npm view opencode-codegraph-bridge version --registry=https://registry.npmjs.org/` 显式检查官方包。仅在你确有意图时更改 registry。 |
+| 在 bridge 源码 worktree 中报命令未找到或退出 127 | 旧启动配置可能让 npm 将同名同版本源码根识别为已安装包，却找不到本地可执行入口；使用包含独立 npm prefix 启动代码的插件版本。 |
+| Codex 报 `.codegraph 是符号链接，拒绝访问` | 这是数据目录安全检查。保留原链接，可为 bridge 的 MCP 环境设置 `CODEGRAPH_DIR=.codegraph-bridge`，使用项目内的真实目录和独立索引。 |
 
 ## 开发
 
