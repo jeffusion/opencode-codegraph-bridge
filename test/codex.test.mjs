@@ -10,6 +10,7 @@ import { createRequire } from "node:module"
 import { resolveCodexProjectRoot } from "../src/project.mjs"
 import { contextForEvent, runHook } from "../src/codex-hook.mjs"
 import { CODEX_PROMPT } from "../src/guidance.mjs"
+import { createCodexIndexingGate, createCodexOutputFramer } from "../src/codex-indexing.mjs"
 import { installCodex, packageCodex, pluginFiles, PLUGIN_ID } from "../src/codex-plugin.js"
 import { absent, descendants, gone, rpc, until } from "./codex-test-support.mjs"
 
@@ -109,6 +110,89 @@ test("Hook 只为受支持事件与安全 Git cwd 输出 additionalContext", asy
     const parsed = JSON.parse(out)
     assert.equal(Boolean(parsed.hookSpecificOutput), input.startsWith('{"hook_event_name"'))
   }
+}))
+
+test("Codex 初始化门禁：分块 UTF-8、并发请求、跨项目与失败状态", async () => temporary(async (tmp) => {
+  const root = await git(join(tmp, "项目"))
+  const nested = join(root, "nested")
+  await mkdir(nested)
+  const other = await git(join(tmp, "other"))
+  const state = { phase: "initializing" }
+  let forwarded = ""
+  let replies = ""
+  const gate = createCodexIndexingGate(root, state, { write: (text) => { replies += text } })
+  gate.on("data", (chunk) => { forwarded += chunk })
+  const request = (id, projectPath) => ({ jsonrpc: "2.0", id, method: "tools/call", params: {
+    name: "codegraph_explore", arguments: { query: "符号", ...(projectPath === undefined ? {} : { projectPath }) },
+  } })
+  const handshake = JSON.stringify({ jsonrpc: "2.0", id: "hello", method: "initialize" })
+  const unrelated = JSON.stringify(request("other", other))
+  const bytes = Buffer.from(`${handshake}\n${JSON.stringify(request(1, nested))}\n${unrelated}\n${JSON.stringify(request(2))}\n`)
+  for (const byte of bytes.subarray(0, -1)) gate.write(Buffer.from([byte]))
+  await new Promise((done) => gate.write(bytes.subarray(-1), done))
+  assert.equal(forwarded, `${handshake}\n${unrelated}\n`)
+  const pending = replies.trim().split("\n").map(JSON.parse)
+  assert.deepEqual(pending.map((reply) => reply.id), [1, 2])
+  for (const reply of pending) {
+    assert.notEqual(reply.result.isError, true)
+    assert.match(reply.result.content[0].text, /still initializing.*项目/)
+    assert.match(reply.result.content[0].text, /retry CodeGraph later in this session/)
+    assert.doesNotMatch(reply.result.content[0].text, /isn't indexed|don't call codegraph/)
+  }
+  state.phase = "failed"
+  state.message = "fixture initialization failure"
+  await new Promise((done) => gate.write(`${JSON.stringify(request(3))}\n`, done))
+  assert.match(JSON.parse(replies.trim().split("\n").at(-1)).result.content[0].text, /initialization failed.*fixture initialization failure/)
+  state.phase = "ready"
+  const live = JSON.stringify(request(4, root))
+  gate.end(live)
+  await new Promise((done) => gate.on("end", done))
+  assert.equal(forwarded, `${handshake}\n${unrelated}\n${live}\n`)
+}))
+
+test("Codex 门禁回复不会插入分块的上游 JSON 中间", async () => temporary(async (tmp) => {
+  const root = await git(join(tmp, "repo"))
+  let output = ""
+  const destination = { write: (text) => { output += text } }
+  const frames = createCodexOutputFramer()
+  frames.on("data", (chunk) => destination.write(chunk))
+  const gate = createCodexIndexingGate(root, { phase: "initializing" }, destination)
+  gate.resume()
+  const upstream = JSON.stringify({ jsonrpc: "2.0", id: "other", result: { content: [{ type: "text", text: "分块响应" }] } })
+  const bytes = Buffer.from(`${upstream}\n`)
+  const split = bytes.indexOf(Buffer.from("响应")) + 1
+  await new Promise((done) => frames.write(bytes.subarray(0, split), done))
+  assert.equal(output, "")
+  await new Promise((done) => gate.write(`${JSON.stringify({ jsonrpc: "2.0", id: "local", method: "tools/call", params: { name: "codegraph_explore" } })}\n`, done))
+  frames.end(bytes.subarray(split))
+  gate.end()
+  await new Promise((done) => frames.on("end", done))
+  const messages = output.trim().split("\n").map(JSON.parse)
+  assert.deepEqual(messages.map((message) => message.id), ["local", "other"])
+  assert.equal(messages[1].result.content[0].text, "分块响应")
+}))
+
+test("Codex 等锁失败后，另一会话发布索引可在同一连接恢复", async () => temporary(async (tmp) => {
+  const root = await git(join(tmp, "repo"))
+  const state = { phase: "failed", message: "initialization lock timeout" }
+  let ready = false
+  let checks = 0
+  let replies = ""
+  let forwarded = ""
+  const gate = createCodexIndexingGate(root, state, { write: (text) => { replies += text } }, async () => { checks++; return ready })
+  gate.on("data", (chunk) => { forwarded += chunk })
+  const request = (id) => `${JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { name: "codegraph_explore", arguments: { projectPath: root } } })}\n`
+  await new Promise((done) => gate.write(request(1), done))
+  assert.match(JSON.parse(replies).result.content[0].text, /initialization lock timeout/)
+  assert.equal(forwarded, "")
+  ready = true
+  await new Promise((done) => gate.write(request(2), done))
+  assert.equal(state.phase, "ready")
+  assert.equal(forwarded, request(2))
+  await new Promise((done) => gate.write(request(3), done))
+  assert.equal(forwarded, request(2) + request(3))
+  assert.equal(checks, 2)
+  gate.end()
 }))
 
 test("原生插件固定当前精确版本、保留 CodeGraph 依赖且可独立运行 Hook", async () => temporary(async (root) => {

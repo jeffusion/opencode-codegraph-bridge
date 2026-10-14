@@ -1,6 +1,9 @@
 import { spawn } from "node:child_process"
+import { existsSync } from "node:fs"
+import { join } from "node:path"
 import { resolveCodexProjectRoot } from "./project.mjs"
-import { inspectCodeGraphData, resolveRuntime } from "./internal.js"
+import { inspectCodeGraphData, isReadyStatus, LOCK_NAME, readStatus, resolveRuntime } from "./internal.js"
+import { createCodexIndexingGate, createCodexOutputFramer } from "./codex-indexing.mjs"
 
 /** Run the platform Node, not the Node/Bun that happened to launch npm. */
 export async function runCodexMcp(options = {}) {
@@ -15,7 +18,20 @@ export async function runCodexMcp(options = {}) {
   return new Promise((resolveResult, reject) => {
     const child = spawn(runtime.nodePath, ["--liftoff-only", "--disable-warning=ExperimentalWarning", runtime.launcherPath], {
       cwd: project.root, env: { ...process.env, ...options.env, CODEGRAPH_NO_DOWNLOAD: "1", CODEGRAPH_BRIDGE_STAGE_INIT: "1" }, shell: false,
-      detached: process.platform !== "win32", stdio: ["pipe", "pipe", "pipe"],
+      detached: process.platform !== "win32", stdio: ["pipe", "pipe", "pipe", "ipc"],
+    })
+    const state = { phase: "initializing" }
+    const gate = createCodexIndexingGate(project.root, state, output, async () => {
+      const current = inspectCodeGraphData(project.root)
+      if (!current.ok || !existsSync(current.dbPath) || existsSync(join(current.dataDir, LOCK_NAME))) return false
+      const status = await readStatus(runtime, project.root, 5_000)
+      return status.ok && isReadyStatus(status.status, project.root)
+    })
+    const frames = createCodexOutputFramer()
+    child.on("message", (message) => {
+      if (message?.type !== "codegraph-bridge-initialization") return
+      state.phase = message.success ? "ready" : "failed"
+      state.message = message.message
     })
     let stopping = false
     let timer
@@ -30,7 +46,9 @@ export async function runCodexMcp(options = {}) {
       if (stopping) return
       stopping = true
       stopCode = code
-      input.unpipe(child.stdin)
+      input.unpipe(gate)
+      gate.unpipe(child.stdin)
+      gate.destroy()
       child.stdin.end()
       kill(signal)
       timer = setTimeout(() => kill("SIGKILL"), 8_000)
@@ -43,11 +61,13 @@ export async function runCodexMcp(options = {}) {
     process.on("SIGINT", onInt)
     input.once("end", onEnd)
     input.once("error", onEnd)
+    gate.once("error", onEnd)
+    frames.once("error", onEnd)
     output.once("error", onOutputError)
     child.stdin.on("error", () => {})
-    child.stdout.pipe(output, { end: false })
+    child.stdout.pipe(frames).pipe(output, { end: false })
     child.stderr.pipe(diagnostic, { end: false })
-    input.pipe(child.stdin)
+    input.pipe(gate).pipe(child.stdin)
     if (input.readableEnded) stop()
     const cleanup = async () => {
       // The launcher can exit before its worker; retain bounded group cleanup.
@@ -61,7 +81,10 @@ export async function runCodexMcp(options = {}) {
         kill("SIGKILL")
       }
       clearTimeout(timer)
-      input.unpipe(child.stdin)
+      input.unpipe(gate)
+      gate.destroy()
+      frames.unpipe(output)
+      frames.destroy()
       input.removeListener("end", onEnd)
       input.removeListener("error", onEnd)
       output.removeListener("error", onOutputError)

@@ -16,14 +16,15 @@ function fail(message) {
 async function initialize(runtime, root, inspection) {
   if (!inspection.ok) {
     report(`自动初始化已跳过：${inspection.reason}`)
-    return
+    return { success: false, message: inspection.reason }
   }
   if (existsSync(inspection.dbPath)) {
     const current = await readStatus(runtime, root)
-    if (current.ok && isReadyStatus(current.status, root, true)) return
+    if (current.ok && isReadyStatus(current.status, root, true)) return { success: true }
   }
   const result = await runInitializationWorker(runtime, root, process.pid)
   if (!result.success) report(`首次初始化失败：${result.message}`)
+  return result
 }
 
 async function main() {
@@ -38,7 +39,11 @@ async function main() {
   const server = new MCPServer(project.root)
   const serving = server.start()
   void initialize(runtime, project.root, safety).catch((error) => {
-    report(`首次初始化异常：${error?.message || String(error)}`)
+    const message = error?.message || String(error)
+    report(`首次初始化异常：${message}`)
+    return { success: false, message }
+  }).then((result) => {
+    if (process.connected) process.send({ type: "codegraph-bridge-initialization", ...result })
   })
   await serving
 }
