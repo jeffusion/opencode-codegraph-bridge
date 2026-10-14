@@ -47,7 +47,7 @@ npx opencode-codegraph-bridge install --host codex
 
 安装后重启 Codex。在 CLI 的 `/hooks` 中审核并信任插件命令 hook，即可启用自动提示。Codex 要求审核具体 hook 定义；安装或启用插件不会自动信任 hook，定义变化后也可能需要重新审核。安装器不会绕过这项要求。参考[官方 Hook 文档](https://learn.chatgpt.com/docs/hooks)。
 
-Codex 的提示通过 `SessionStart`（startup、resume、clear、compact）和 `SubagentStart` 的 `additionalContext` 加入 developer context；与 OpenCode 的 system hook 接口不同。插件同时提供 `codegraph-exploration` skill。提示明确说明首次索引在后台进行，工具出现并不代表索引已就绪，结果不足时应继续使用允许的文件读取和搜索工具。
+Codex 的提示通过 `SessionStart`（startup、resume、clear、compact）和 `SubagentStart` 的 `additionalContext` 加入 developer context；与 OpenCode 的 system hook 接口不同。插件同时提供 `codegraph-exploration` skill。提示明确说明首次索引在后台进行，工具出现并不代表索引已就绪，结果不足时应继续使用允许的文件读取和搜索工具。新 worktree 的首次索引发布前，当前项目的查询会返回“后台初始化中，可在本会话稍后重试”；索引完成后同一 MCP 连接自动放行。初始化失败会返回具体原因，其他项目的查询仍由 CodeGraph 自行处理。
 
 原生 MCP 使用独立键 `codegraph_bridge`，由自包含的 Node 启动代码调用固定 bridge 版本的 `npx --yes --prefer-offline`。启动代码为 npm 创建独立的临时 prefix，保留会话 cwd，避免 npm 把同名同版本的源码仓库误认为已安装包；它不依赖 Codex 展开 MCP 参数中的插件路径变量。本包仍保留 CodeGraph **`^1.6.0`** 范围依赖；新 npm 缓存可能解析出范围内不同的 CodeGraph 版本。首次启动需要访问 npm 获取包及平台依赖，随后复用 npm 缓存；启动超时为 120 秒，失败不阻止 Codex 会话。Codex 会话 cwd 通过 Git 解析到安全仓库根目录，支持子目录及 worktree；在非 Git 目录不会索引。EOF、SIGTERM、SIGINT 会清理临时 prefix 和 bridge 自己的 npm 子进程、launcher、初始化 worker，共享 CodeGraph daemon 由 CodeGraph 自行管理。
 
@@ -131,6 +131,7 @@ CodeGraph 的平台运行时从本包依赖树中解析。本 bridge 已在 Linu
 | npm 镜像返回 404 | 先运行 `npm config get registry`，再用 `npm view opencode-codegraph-bridge version --registry=https://registry.npmjs.org/` 显式检查官方包。仅在你确有意图时更改 registry。 |
 | 在 bridge 源码 worktree 中报命令未找到或退出 127 | 旧启动配置可能让 npm 将同名同版本源码根识别为已安装包，却找不到本地可执行入口；使用包含独立 npm prefix 启动代码的插件版本。 |
 | Codex 报 `.codegraph 是符号链接，拒绝访问` | 这是数据目录安全检查。保留原链接，可为 bridge 的 MCP 环境设置 `CODEGRAPH_DIR=.codegraph-bridge`，使用项目内的真实目录和独立索引。 |
+| 新 worktree 首次查询报未索引，但稍后出现 `.codegraph` | 首次索引在临时目录完成后才发布数据库，旧版会把等待期当作“未索引”。使用带初始化门禁的 bridge 版本；收到后台初始化提示后可继续文件探索，并在本会话稍后重试。 |
 
 ## 开发
 

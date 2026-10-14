@@ -5,7 +5,7 @@ import assert from "node:assert/strict"
 import { createHash } from "node:crypto"
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
-import { readFile, rename, stat, writeFile } from "node:fs/promises"
+import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises"
 import { join, resolve } from "node:path"
 import { installCodex, PLUGIN_ID } from "../src/codex-plugin.js"
 import { isReadyStatus, readStatus, resolveRuntime, LOCK_NAME } from "../src/internal.js"
@@ -44,15 +44,27 @@ async function shutdown(client, root, mode, owned) {
   await until(() => absent(join(root, ".codegraph", LOCK_NAME)), `${mode} left initialization lock`, 12_000)
 }
 
-test("CLI MCP: initialize/list 先于后台 ready，explore 与 watcher，EOF 主进程清理", { skip: linux, timeout: 240_000 }, async () => fixture(async (tmp) => {
-  const root = await repository(join(tmp, "repo"))
+test("CLI MCP: worktree 冷启动返回初始化提示，同一连接恢复 explore 与 watcher，EOF 清理", { skip: linux, timeout: 240_000 }, async () => fixture(async (tmp) => {
+  const repo = await repository(join(tmp, "repo"))
+  await execute("git", ["-C", repo, "add", "sample.js"])
+  await execute("git", ["-C", repo, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--quiet", "-m", "fixture"])
+  const root = join(tmp, "worktree with spaces")
+  await execute("git", ["-C", repo, "worktree", "add", "--quiet", "--detach", root])
   const client = start(root)
   try {
     await initialize(client, root)
+    for (const arguments_ of [{ query: "CodexBridgeInitialSymbol", projectPath: root }, { query: "CodexBridgeInitialSymbol" }]) {
+      const pending = await client.request("tools/call", { name: "codegraph_explore", arguments: arguments_ })
+      assert.notEqual(pending.isError, true)
+      assert.ok(pending.content.some((item) => item.text?.includes("still initializing") && item.text.includes("retry CodeGraph later in this session")))
+      assert.ok(pending.content.every((item) => !/isn't indexed|don't call codegraph/.test(item.text || "")))
+    }
     await ready(root, client)
-    const result = await client.request("tools/call", { name: "codegraph_explore", arguments: { query: "CodexBridgeInitialSymbol" } })
-    assert.notEqual(result.isError, true)
-    assert.ok(result.content.some((item) => item.text?.includes("sample.js") && item.text.includes("CODEX_BEFORE_65C1")))
+    for (const arguments_ of [{ query: "CodexBridgeInitialSymbol", projectPath: root }, { query: "CodexBridgeInitialSymbol" }]) {
+      const result = await client.request("tools/call", { name: "codegraph_explore", arguments: arguments_ })
+      assert.notEqual(result.isError, true)
+      assert.ok(result.content.some((item) => item.text?.includes("sample.js") && item.text.includes("CODEX_BEFORE_65C1")))
+    }
     await writeFile(join(root, "sample.js"), 'export function CodexBridgeWatcherSymbol() { return "CODEX_AFTER_80A9" }\n', { flag: "a" })
     await until(async () => {
       const watched = await client.request("tools/call", { name: "codegraph_explore", arguments: { query: "CodexBridgeWatcherSymbol" } })
@@ -72,6 +84,32 @@ for (const mode of ["SIGTERM", "SIGINT"]) test(`CLI MCP: ${mode} 只发给 leade
     await until(async () => (await descendants(client.child.pid)).length >= 3 || !(await absent(join(root, ".codegraph", LOCK_NAME))), "no worker/lock observed", 15_000)
     const owned = (await descendants(client.child.pid)).map((row) => row.pid)
     await shutdown(client, root, mode, owned)
+  } finally { await client.cleanup() }
+}))
+
+test("CLI MCP: 初始化锁失败后，外部发布健康索引，同一连接重试恢复", { skip: linux, timeout: 120_000 }, async () => fixture(async (tmp) => {
+  const root = await repository(join(tmp, "repo"))
+  const lock = join(root, ".codegraph", LOCK_NAME)
+  await mkdir(lock, { recursive: true })
+  // A fixture-owned stale lock makes the real worker fail without a slow index.
+  await writeFile(join(lock, "owner.json"), JSON.stringify({ pid: 2_147_483_647, root }))
+  const client = start(root)
+  try {
+    await initialize(client, root)
+    await until(async () => {
+      const result = await client.request("tools/call", { name: "codegraph_explore", arguments: { query: "CodexBridgeInitialSymbol", projectPath: root } })
+      return result.content?.some((item) => item.text?.includes("automatic initialization failed"))
+    }, "worker failure was not surfaced", 15_000)
+    assert.equal(await absent(join(root, ".codegraph", "codegraph.db")), true)
+    await rm(lock, { recursive: true })
+    await execute(runtime.nodePath, ["--liftoff-only", "--disable-warning=ExperimentalWarning", runtime.cliPath, "init", root, "--yes"], {
+      cwd: root, env: { ...process.env, CODEGRAPH_NO_DOWNLOAD: "1", CODEGRAPH_NO_DAEMON: "1" }, timeout: 60_000,
+    })
+    const result = await client.request("tools/call", { name: "codegraph_explore", arguments: { query: "CodexBridgeInitialSymbol", projectPath: root } })
+    assert.notEqual(result.isError, true)
+    assert.ok(result.content.some((item) => item.text?.includes("CODEX_BEFORE_65C1")))
+    const owned = (await descendants(client.child.pid)).map((row) => row.pid)
+    await shutdown(client, root, "EOF", owned)
   } finally { await client.cleanup() }
 }))
 

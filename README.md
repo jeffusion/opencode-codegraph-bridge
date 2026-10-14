@@ -131,6 +131,7 @@ CodeGraph's platform-specific runtime is resolved from this package's dependency
 | npm mirror returns 404 | Inspect `npm config get registry`, then diagnose the official package explicitly with `npm view opencode-codegraph-bridge version --registry=https://registry.npmjs.org/`. Change your registry only if you intend to. |
 | Missing command or exit 127 inside a bridge source worktree | Old launch configurations can mistake the same-name/version checkout for an installed package without a local executable. Use a plugin version with the isolated npm prefix bootstrap. |
 | Codex rejects `.codegraph` as a symbolic link | This is the data-directory safety check. Preserve the link and set `CODEGRAPH_DIR=.codegraph-bridge` in the bridge MCP environment to use a real project-local directory with its own index. |
+| A new worktree reports no index, but `.codegraph` appears later | The first index is built in a staging directory before the database is published. Use a bridge version with the initialization gate: cold queries report background initialization, and the same MCP connection permits queries once it completes. Initialization failures report their cause; queries for other projects remain under CodeGraph's control. |
 
 ## Development
 
