@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.2](https://github.com/jeffusion/opencode-codegraph-bridge/compare/v0.7.1...v0.7.2) (2026-10-14)
+
+
+### Bug Fixes
+
+* **codex:** keep cold-start indexing queries retryable ([8c4e06b](https://github.com/jeffusion/opencode-codegraph-bridge/commit/8c4e06b719862c1f1099dc2be3b8b56009688a45))
+
 ## [0.7.1](https://github.com/jeffusion/opencode-codegraph-bridge/compare/v0.7.0...v0.7.1) (2026-10-07)
 
 
