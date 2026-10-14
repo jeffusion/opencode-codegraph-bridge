@@ -42,7 +42,7 @@
   },
   "dependencies": {
     "@colbymchenry/codegraph": "^1.6.0",
-    "@opencode/plugin": "2.0.15",
+    "@opencode/plugin": "2.0.29",
     "jsonc-parser": "^3.3.1"
   }
 }
