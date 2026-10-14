@@ -4,6 +4,7 @@ import { join } from "node:path"
 import { resolveCodexProjectRoot } from "./project.mjs"
 import { inspectCodeGraphData, isReadyStatus, LOCK_NAME, readStatus, resolveRuntime } from "./internal.js"
 import { createCodexIndexingGate, createCodexOutputFramer } from "./codex-indexing.mjs"
+import { runCodexAutoUpdate } from "./codex-auto-update.mjs"
 
 /** Run the platform Node, not the Node/Bun that happened to launch npm. */
 export async function runCodexMcp(options = {}) {
@@ -15,6 +16,9 @@ export async function runCodexMcp(options = {}) {
   const input = options.stdin || process.stdin
   const output = options.stdout || process.stdout
   const diagnostic = options.stderr || process.stderr
+  const updateController = new AbortController()
+  const updating = runCodexAutoUpdate({ env: { ...process.env, ...options.env }, signal: updateController.signal,
+    log: (message) => diagnostic.write(`[opencode-codegraph-bridge] ${message}\n`) })
   return new Promise((resolveResult, reject) => {
     const child = spawn(runtime.nodePath, ["--liftoff-only", "--disable-warning=ExperimentalWarning", runtime.launcherPath], {
       cwd: project.root, env: { ...process.env, ...options.env, CODEGRAPH_NO_DOWNLOAD: "1", CODEGRAPH_BRIDGE_STAGE_INIT: "1" }, shell: false,
@@ -45,6 +49,7 @@ export async function runCodexMcp(options = {}) {
     const stop = (signal = "SIGTERM", code = 0) => {
       if (stopping) return
       stopping = true
+      updateController.abort()
       stopCode = code
       input.unpipe(gate)
       gate.unpipe(child.stdin)
@@ -70,6 +75,7 @@ export async function runCodexMcp(options = {}) {
     input.pipe(gate).pipe(child.stdin)
     if (input.readableEnded) stop()
     const cleanup = async () => {
+      updateController.abort()
       // The launcher can exit before its worker; retain bounded group cleanup.
       kill("SIGTERM")
       const deadline = Date.now() + 8_000
@@ -91,6 +97,7 @@ export async function runCodexMcp(options = {}) {
       process.removeListener("SIGTERM", onTerm)
       process.removeListener("SIGINT", onInt)
       input.pause()
+      await updating
     }
     child.once("error", async (error) => { await cleanup(); reject(error) })
     child.once("close", async (code, signal) => { await cleanup(); resolveResult(stopCode ?? code ?? (signal === "SIGINT" ? 130 : 143)) })

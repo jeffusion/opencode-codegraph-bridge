@@ -6,7 +6,7 @@ import { homedir } from "node:os"
 import { dirname, isAbsolute, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises"
-import { compareVersions, ensureSafeDirectory, safeDirectory, safeFile, writeNew } from "./config-file.js"
+import { compareVersions, ensureSafeDirectory, safeDirectory, safeFile, sameSnapshot, snapshot, writeExisting, writeNew } from "./config-file.js"
 
 const execute = promisify(execFile)
 const source = dirname(fileURLToPath(import.meta.url))
@@ -14,6 +14,7 @@ const pkg = createRequire(import.meta.url)("../package.json")
 export const PLUGIN_NAME = "codegraph-bridge"
 export const PLUGIN_ID = `${PLUGIN_NAME}@${PLUGIN_NAME}`
 const OWNER = `${pkg.name}:codex-marketplace:v1`
+const PENDING_INSTALL = ".install-pending.json"
 const json = (value) => `${JSON.stringify(value, null, 2)}\n`
 const digest = (value) => createHash("sha256").update(value).digest("hex")
 
@@ -94,7 +95,63 @@ async function command(binary, args, env) {
 async function ownedStore(store) {
   const marker = join(store, ".bridge-owner.json")
   if (!await safeDirectory(store) || !await safeFile(marker) || JSON.parse(await readFile(marker, "utf8")).owner !== OWNER) throw new Error(`Marketplace directory is not owned by this bridge: ${store}`)
-  for (const name of await readdir(store)) if (![".bridge-owner.json", ".agents", "plugins", ".install.lock"].includes(name)) throw new Error(`Unexpected marketplace content: ${name}`)
+  for (const name of await readdir(store)) if (![".bridge-owner.json", ".agents", "plugins", ".install.lock", PENDING_INSTALL].includes(name)) throw new Error(`Unexpected marketplace content: ${name}`)
+}
+
+async function removeSnapshot(path, expected) {
+  if (!sameSnapshot(expected, await snapshot(path))) return false
+  await rm(path)
+  return true
+}
+
+/** Read-only proof that an enabled native installation still belongs to this bridge. */
+export async function inspectCodexUpdateTarget(options = {}) {
+  const env = options.env || process.env
+  const invoke = options.command || command
+  const cli = options.codex || "codex"
+  const home = env.CODEX_HOME || join(homedir(), ".codex")
+  const store = join(home, "codegraph-bridge", "marketplace")
+  if (!isAbsolute(home) || !await safeDirectory(home) || !await safeFile(join(store, ".bridge-owner.json"))) return null
+  await ownedStore(store)
+  const listings = JSON.parse(await invoke(cli, ["plugin", "list", "--json"], env))
+  const markets = JSON.parse(await invoke(cli, ["plugin", "marketplace", "list", "--json"], env))
+  if (!Array.isArray(listings.installed) || !Array.isArray(markets.marketplaces)) return null
+  const matches = listings.installed.filter((entry) => entry.name === PLUGIN_NAME || entry.pluginId === PLUGIN_ID)
+  const namedMarkets = markets.marketplaces.filter((entry) => entry.name === PLUGIN_NAME)
+  const entry = matches[0]
+  const marketEntry = namedMarkets[0]
+  if (matches.length !== 1 || namedMarkets.length !== 1 || entry.enabled !== true ||
+    entry.pluginId !== PLUGIN_ID || entry.version !== options.expectedVersion ||
+    entry.source?.source !== "local" || entry.source.path !== join(store, "plugins", `${PLUGIN_NAME}-${entry.version}`) ||
+    entry.marketplaceSource?.sourceType !== "local" || resolve(entry.marketplaceSource.source) !== store ||
+    marketEntry.marketplaceSource?.sourceType !== "local" || resolve(marketEntry.marketplaceSource.source) !== store || resolve(marketEntry.root) !== store) return null
+  await verifyBundle(entry.source.path, entry.version === pkg.version ? await pluginFiles() : undefined)
+  const descriptor = await snapshot(join(store, ".agents", "plugins", "marketplace.json"))
+  if (!descriptor) return null
+  const catalog = JSON.parse(descriptor.content)
+  const pendingPath = join(store, PENDING_INSTALL)
+  const pending = await snapshot(pendingPath)
+  let recovery
+  if (pending) {
+    const value = JSON.parse(pending.content)
+    if (value.owner !== OWNER || compareVersions(value.to, value.from) !== 1 ||
+      ![value.from, value.to].includes(entry.version) || typeof value.original !== "string" ||
+      JSON.stringify(JSON.parse(value.original)) !== JSON.stringify(market(value.from))) return null
+    recovery = { snapshot: pending, value }
+  } else if (await exists(pendingPath)) return null
+  if (JSON.stringify(catalog) !== JSON.stringify(market(entry.version))) {
+    if (!recovery || recovery.value.from !== entry.version || JSON.stringify(catalog) !== JSON.stringify(market(recovery.value.to))) return null
+    await verifyBundle(join(store, "plugins", `${PLUGIN_NAME}-${recovery.value.to}`))
+  }
+  const servers = JSON.parse(await invoke(cli, ["mcp", "list", "--json"], env))
+  if (!Array.isArray(servers)) return null
+  const server = servers.find((item) => item.name === "codegraph_bridge")
+  const bundled = JSON.parse(await readFile(join(entry.source.path, ".mcp.json"), "utf8")).mcpServers.codegraph_bridge
+  if (server?.enabled !== true || server.transport?.type !== "stdio" || server.transport.command !== bundled.command ||
+    JSON.stringify(server.transport.args) !== JSON.stringify(bundled.args) || server.transport.env?.CODEGRAPH_BRIDGE_AUTO_UPDATE === "0") return null
+  const config = await snapshot(join(home, "config.toml"))
+  const inventory = await snapshot(join(entry.source.path, ".bridge-files.json"))
+  return config && inventory && (config.stat.mode & 0o222) !== 0 ? { home, store, version: entry.version, config, inventory, descriptor, recovery } : null
 }
 
 async function prepareVersion(store) {
@@ -132,6 +189,13 @@ export async function installCodex(options = {}) {
   const invoke = options.command || command
   const cli = options.codex || "codex"
   const home = env.CODEX_HOME || join(homedir(), ".codex")
+  const updateStillAllowed = async () => {
+    if (!options.expectedVersion) return true
+    const target = await inspectCodexUpdateTarget({ env, command: invoke, codex: cli, expectedVersion: options.expectedVersion })
+    return !!target && sameSnapshot(options.expectedConfig, target.config) && sameSnapshot(options.expectedInventory, target.inventory)
+  }
+  const skipped = { changed: false, skipped: true, version: options.expectedVersion }
+  if (!await updateStillAllowed()) return skipped
   if (!isAbsolute(home)) throw new Error("CODEX_HOME must be an absolute path.")
   if (!await safeDirectory(home) && !await ensureSafeDirectory(home)) throw new Error("Unsafe CODEX_HOME directory.")
   const store = join(home, "codegraph-bridge", "marketplace")
@@ -166,16 +230,67 @@ export async function installCodex(options = {}) {
   await ownedStore(store)
   const lock = join(store, ".install.lock")
   try { await mkdir(lock) } catch { throw new Error("Codex bridge installation is busy; retry after the other installer finishes.") }
+  const descriptor = join(store, ".agents", "plugins", "marketplace.json")
+  let previousDescriptor
+  let stagedDescriptor
+  let pendingInstall
+  let committed = false
   try {
     // Another invocation may have completed or disabled the plugin after our
     // lock-free snapshot. Recheck before any version/descriptor mutation.
     const refreshed = await inspect()
     if (refreshed) return refreshed
+    if (!await updateStillAllowed()) return skipped
+    if (await exists(join(store, PENDING_INSTALL))) {
+      const version = options.expectedVersion || (await query(["plugin", "list", "--json"])).installed?.find((entry) => entry.pluginId === PLUGIN_ID)?.version
+      const target = await inspectCodexUpdateTarget({ env, command: invoke, codex: cli, expectedVersion: version })
+      if (!target) throw new Error("Cannot safely recover the pending Codex bridge update; check the native installation and configuration.")
+      if (target.recovery) {
+        // A previous cancellation may also have cancelled its recovery query.
+        // Resolve its journal under the install lock before starting a new stage.
+        const original = target.recovery.value.from === target.version ? target.recovery.value.original : target.descriptor.content
+        if (target.descriptor.content !== original && !await writeExisting(descriptor, target.descriptor, original)) return skipped
+        if (!await removeSnapshot(join(store, PENDING_INSTALL), target.recovery.snapshot)) return skipped
+      }
+    }
+    if (options.expectedVersion) {
+      if (!await updateStillAllowed()) return skipped
+      previousDescriptor = await snapshot(descriptor)
+      if (!previousDescriptor || !await writeNew(join(store, PENDING_INSTALL), json({ owner: OWNER,
+        from: options.expectedVersion, to: pkg.version, original: previousDescriptor.content }))) return skipped
+      pendingInstall = await snapshot(join(store, PENDING_INSTALL))
+    }
     const bundle = await prepareVersion(store)
-    await query(["plugin", "marketplace", "add", store, "--json"])
+    if (previousDescriptor) stagedDescriptor = await snapshot(descriptor)
+    if (options.expectedVersion) {
+      // Catalog registration is already verified. Do not rewrite user config
+      // while downloading/upgrading, or re-enable a concurrently disabled plugin.
+      if (!sameSnapshot(options.expectedConfig, await snapshot(join(home, "config.toml")))) return skipped
+    } else await query(["plugin", "marketplace", "add", store, "--json"])
     await query(["plugin", "add", PLUGIN_ID, "--json"])
     const installed = (await query(["plugin", "list", "--json"])).installed?.find((entry) => entry.pluginId === PLUGIN_ID)
     if (!installed || installed.version !== pkg.version || installed.enabled !== true || installed.source?.path !== bundle) throw new Error("Codex did not confirm the expected enabled plugin version and source.")
+    committed = true
     return { changed: true, disabled: false, version: pkg.version, store }
-  } finally { await rm(lock, { recursive: true, force: true }) }
+  } finally {
+    try {
+      if (pendingInstall && committed) await removeSnapshot(join(store, PENDING_INSTALL), pendingInstall)
+      else if (previousDescriptor && pendingInstall) {
+        // Cancellation may happen after the CLI committed. Query with a separate
+        // bounded command before restoring only our descriptor, never user config.
+        const recover = options.recoveryCommand || invoke
+        const entries = JSON.parse(await recover(cli, ["plugin", "list", "--json"], env)).installed
+        const installed = entries?.find((entry) => entry.pluginId === PLUGIN_ID)
+        stagedDescriptor ||= await snapshot(descriptor)
+        if (installed?.version === options.expectedVersion && installed.source?.source === "local" &&
+          installed.source.path === join(store, "plugins", `${PLUGIN_NAME}-${options.expectedVersion}`) &&
+          stagedDescriptor?.content === json(market(pkg.version))) await writeExisting(descriptor, stagedDescriptor, previousDescriptor.content)
+        const current = await snapshot(descriptor)
+        if ((installed?.version === options.expectedVersion && current?.content === previousDescriptor.content) ||
+          (installed?.version === pkg.version && installed.source?.path === join(store, "plugins", `${PLUGIN_NAME}-${pkg.version}`))) {
+          await removeSnapshot(join(store, PENDING_INSTALL), pendingInstall)
+        }
+      }
+    } finally { await rm(lock, { recursive: true, force: true }) }
+  }
 }
