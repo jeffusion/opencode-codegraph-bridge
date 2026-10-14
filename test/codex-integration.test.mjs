@@ -5,7 +5,7 @@ import assert from "node:assert/strict"
 import { createHash } from "node:crypto"
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
-import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises"
+import { chmod, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises"
 import { join, resolve } from "node:path"
 import { installCodex, PLUGIN_ID } from "../src/codex-plugin.js"
 import { isReadyStatus, readStatus, resolveRuntime, LOCK_NAME } from "../src/internal.js"
@@ -15,8 +15,8 @@ const execute = promisify(execFile)
 const runtime = resolveRuntime()
 const cli = resolve("src/cli.js")
 const linux = process.platform !== "linux" ? "requires Linux /proc" : false
-function start(root, daemon = false) {
-  const env = { ...process.env, CODEGRAPH_NO_DOWNLOAD: "1", CODEGRAPH_DAEMON_IDLE_TIMEOUT_MS: "1000", CODEGRAPH_DAEMON_MAX_IDLE_MS: "120000", CODEGRAPH_DAEMON_CLIENT_SWEEP_MS: "100" }
+function start(root, daemon = false, extraEnv = {}) {
+  const env = { ...process.env, CODEGRAPH_NO_DOWNLOAD: "1", CODEGRAPH_BRIDGE_AUTO_UPDATE: "0", CODEGRAPH_DAEMON_IDLE_TIMEOUT_MS: "1000", CODEGRAPH_DAEMON_MAX_IDLE_MS: "120000", CODEGRAPH_DAEMON_CLIENT_SWEEP_MS: "100", ...extraEnv }
   delete env.CODEGRAPH_DIR
   if (!daemon) env.CODEGRAPH_NO_DAEMON = "1"
   else delete env.CODEGRAPH_NO_DAEMON
@@ -43,6 +43,29 @@ async function shutdown(client, root, mode, owned) {
   await until(() => gone(owned), `${mode} left a running owned process`, 12_000)
   await until(() => absent(join(root, ".codegraph", LOCK_NAME)), `${mode} left initialization lock`, 12_000)
 }
+
+test("CLI MCP: 后台升级命令挂起时 MCP 正常启动，EOF 取消升级进程", { skip: linux, timeout: 60_000 }, async (t) => fixture(async (tmp) => {
+  const codex = process.env.CODEX_TEST_BINARY || "codex"
+  try { await execute(codex, ["--version"]) } catch { t.skip("official Codex CLI unavailable"); return }
+  const home = join(tmp, "home")
+  await installCodex({ env: { ...process.env, CODEX_HOME: home }, codex })
+  const bin = join(tmp, "bin")
+  const marker = join(tmp, "update.pid")
+  await mkdir(bin)
+  const wrapper = join(bin, "codex")
+  await writeFile(wrapper, `#!/usr/bin/env node\nrequire('fs').writeFileSync(${JSON.stringify(marker)}, String(process.pid)); setInterval(() => {}, 1000)\n`)
+  await chmod(wrapper, 0o755)
+  const root = await repository(join(tmp, "repo"))
+  const client = start(root, false, { CODEX_HOME: home, CODEGRAPH_BRIDGE_AUTO_UPDATE: "1", PATH: `${bin}:${process.env.PATH}` })
+  try {
+    await initialize(client, root)
+    await until(() => absent(marker).then((missing) => !missing), "background updater did not start")
+    const updatePid = Number(await readFile(marker, "utf8"))
+    assert.equal((await client.request("ping", {})).isError, undefined)
+    const owned = [...(await descendants(client.child.pid)).map((row) => row.pid), updatePid]
+    await shutdown(client, root, "EOF", owned)
+  } finally { await client.cleanup() }
+}))
 
 test("CLI MCP: worktree 冷启动返回初始化提示，同一连接恢复 explore 与 watcher，EOF 清理", { skip: linux, timeout: 240_000 }, async () => fixture(async (tmp) => {
   const repo = await repository(join(tmp, "repo"))

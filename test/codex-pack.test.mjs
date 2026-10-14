@@ -98,7 +98,7 @@ test("pack tarball -> 隔离 registry/cache -> 精确版本 npx -> 官方 app-se
   // installation: an unpublished same-version artifact must install new bytes.
   const cache = join(tmp, "npm-cache")
   if (process.env.CODEX_TEST_NPM_CACHE) await cp(join(process.env.CODEX_TEST_NPM_CACHE, "_cacache"), join(cache, "_cacache"), { recursive: true })
-  const env = { ...process.env, CODEX_HOME: join(tmp, "home"), npm_config_registry: reg.url, npm_config_cache: cache, npm_config_audit: "false", npm_config_fund: "false", CODEGRAPH_NO_DOWNLOAD: "1", CODEGRAPH_NO_DAEMON: "1" }
+  const env = { ...process.env, CODEX_HOME: join(tmp, "home"), npm_config_registry: reg.url, npm_config_cache: cache, npm_config_audit: "false", npm_config_fund: "false", CODEGRAPH_NO_DOWNLOAD: "1", CODEGRAPH_NO_DAEMON: "1", CODEGRAPH_BRIDGE_AUTO_UPDATE: "0" }
   if (codex.includes("/")) env.PATH = `${dirname(resolve(codex))}:${env.PATH}`
   delete env.OPENAI_API_KEY
   delete env.CODEGRAPH_DIR

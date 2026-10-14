@@ -117,6 +117,8 @@ MCP 配置键因 OpenCode 格式而异：v1 使用 `mcp.codegraph` 和 `enabled`
 
 ## 更新
 
+Codex 原生安装会在 MCP 启动时后台检查公开 npm registry 的稳定 `latest`，成功检查后 24 小时内不重复检查。仅当插件、marketplace 和 MCP 都仍是本包管理的有效安装时才更新；禁用、自定义来源、修改过的 bundle 和不安全路径会跳过。升级复用安装器，通过官方 Codex CLI 注册新版本，保持当前 MCP 的固定版本与旧 bundle，新版本在重启 Codex 后生效。更新不阻塞工具启动，关闭会话会取消未完成的更新；网络或安装失败不影响 MCP，可在后续启动重试。给 Codex 进程或 MCP 环境设置 `CODEGRAPH_BRIDGE_AUTO_UPDATE=0` 可关闭自动升级。更新不会自动信任 hook，定义变化时仍需在 `/hooks` 审核。尚不包含此机制的旧版需要先手动运行一次 `npx --yes opencode-codegraph-bridge@latest install --host codex`。
+
 v1 仍按来源感知方式自动更新：仅当 `plugin_origins` 提供可信且可识别的来源时才尝试更新，否则跳过。v2 自动更新仅适用于安全的 Git 根目录。插件会在后台有限范围检查当前目录的 `opencode.json`/`opencode.jsonc`、`.opencode/opencode.json`/`.opencode/opencode.jsonc`，以及用户 XDG 配置目录下的 `opencode/opencode.json`/`opencode/opencode.jsonc`；祖先目录只进行只读重复项检查。v1 和 v2 都支持本包裸名、`@latest` 或明确固定的稳定版本；版本范围、其他 tag 和预发布版本都会跳过。符合条件的 v2 条目可以是字符串，也可以是 `{ "package": "...", "options": ... }`，其他选项会保留。更新前，宿主 `plugin.list` 中的 package target 必须与待写入磁盘条目的 package spec 字符串完全一致。OpenCode 插件列表还必须确认本包是唯一的 active server 且来源为 package；本地路径来源、自动发现或无法取得插件列表时都会跳过。写入前会再次核对磁盘条目，因此等待更新期间（包括重启时）用户若修改配置，更新就会跳过。成功更新时，裸名或 `@latest` 会替换为明确固定的稳定版本。这些是保守验证，并不表示能够精确判断每个插件条目的配置来源。禁用条目、多处或冲突匹配、opaque 的 file/Git/alias spec、`OPENCODE_CONFIG*` 环境覆盖，以及损坏或符号链接文件都会跳过更新。两版差异不只是配置路径：v1 使用 `plugin` 条目（字符串或 tuple）及 `plugin_origins` API；v2 使用 `plugins` 条目（字符串或对象）及宿主 `plugin.list` API。版本查询使用公开 npm registry 的 `latest` 版本。更新只修改配置文件，需重启 OpenCode 才会生效。CLI 的 `install --format v2` 是独立的安装路径，不会改变此自动更新行为。
 
 ## 平台说明

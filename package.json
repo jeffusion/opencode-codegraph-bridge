@@ -33,11 +33,11 @@
     "LICENSE"
   ],
   "scripts": {
-    "test:unit": "node --test test/unit.test.js test/update.test.js test/update-v2.test.js test/update-v2-discovery.test.js test/auto-update-v2.test.js test/dual-entry.test.js test/install.test.js test/codex.test.mjs",
+    "test:unit": "node --test test/unit.test.js test/update.test.js test/update-v2.test.js test/update-v2-discovery.test.js test/auto-update-v2.test.js test/dual-entry.test.js test/install.test.js test/codex.test.mjs test/codex-auto-update.test.mjs",
     "test:install": "node --test test/install.test.js",
     "test:integration": "node test/integration.test.js",
     "test:opencode": "node test/opencode-smoke.js",
-    "test:codex": "node --test test/codex-integration.test.mjs",
+    "test:codex": "node --test test/codex-integration.test.mjs test/codex-auto-integration.test.mjs",
     "test:codex:pack": "node --test test/codex-pack.test.mjs"
   },
   "dependencies": {
