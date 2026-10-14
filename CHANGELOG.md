@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/jeffusion/opencode-codegraph-bridge/compare/v0.7.2...v0.8.0) (2026-10-14)
+
+
+### Features
+
+* **codex:** add background native plugin updates ([c3acf6a](https://github.com/jeffusion/opencode-codegraph-bridge/commit/c3acf6a9a8815c81967718c64f84b4505928d3ed))
+
 ## [0.7.2](https://github.com/jeffusion/opencode-codegraph-bridge/compare/v0.7.1...v0.7.2) (2026-10-14)
 
 
